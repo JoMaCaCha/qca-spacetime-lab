@@ -10,6 +10,7 @@ authors:
     affiliation: "Independent Researcher, Neiva, Huila, Colombia"
 repository-code: "https://github.com/JoMaCaCha/qca-spacetime-lab"
 url: "https://jomacacha.github.io/qca-spacetime-lab/"
+doi: "10.5281/zenodo.24450504"
 license: MIT
 version: "1.0.0"
 date-released: "2026-11-22"
