@@ -1,5 +1,7 @@
 # Análisis físico
 
+> **For English-speaking readers:** A concise, self-contained English summary of the flagship research results (Pathways A, B, and C; Phases 17–20) with exact tables and independent verification commands is available in [`RESEARCH_SUMMARY.md`](RESEARCH_SUMMARY.md) and [`README.md`](README.md). This document archives the complete historical Spanish physical analysis across all 20 phases.
+
 Este documento reúne el análisis físico completo del motor y de sus experimentos. Los números "medidos" salen de los tests de `src/tests/` y del laboratorio de `index.html`, ejecutados con esta implementación.
 
 ## Fase 1: el núcleo

@@ -1,6 +1,8 @@
 # Tres estudios numéricos de preguntas abiertas en física discreta fundamental (Fase 17)
 
-**Repositorio:** *Juego de la Vida Cuántico* (`src/studies.rs`, `src/tests/phase17.rs`, `src/bin/qsu_cli.rs`, Experimentos 128–130 en `index.html`)  
+> **For English-speaking readers:** See [`RESEARCH_SUMMARY.md`](RESEARCH_SUMMARY.md) for the English technical summary covering these Phase 17 pilot studies together with their Phase 18–20 extensions and independent verification audits.
+
+**Repositorio:** *QCA Spacetime Lab* (`src/studies.rs`, `src/tests/phase17.rs`, `src/bin/qsu_cli.rs`, Experimentos 128–130 en `index.html`)  
 **Verificación reproducible:**
 ```bash
 cargo test --release --lib phase17 -- --nocapture   # tests t183–t185 (2,0 s, 0 avisos)

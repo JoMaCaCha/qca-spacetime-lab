@@ -500,10 +500,11 @@
         <div class="badges">
           <a class="pill" href="https://github.com/JoMaCaCha/qca-spacetime-lab" target="_blank" rel="noopener">GitHub</a>
           <a class="pill" href="https://doi.org/10.5281/zenodo.24450504" target="_blank" rel="noopener">DOI 10.5281/zenodo.24450504</a>
-          <button class="pill cta" id="btn-jump-research" type="button">Experimentos de investigación (Vías A–C)</button>
+          <button class="pill cta" id="btn-jump-research" type="button" data-i18n="cta_research">Experimentos de investigación (Vías A–C)</button>
         </div>
       </div>
-      <p>Laboratorio computacional en <b>Rust + WebAssembly SIMD</b> para autómatas celulares cuánticos (3+1D),
+      <span class="seg" id="lang-seg" title="Language / Idioma"><button type="button" data-lang="en">EN</button><button type="button" data-lang="es">ES</button></span>
+      <p id="header-subtitle">Laboratorio computacional en <b>Rust + WebAssembly SIMD</b> para autómatas celulares cuánticos (3+1D),
         fenomenología de Lorentz, conjuntos causales 2D con materia cuántica y QFT en red 1+1D (DMRG/TDVP). El modo base
         interactivo es una <b>onda clásica de campo medio</b> (caminata cuántica discreta con Kerr saturable, sin
         entrelazamiento), distinta de los QCA unitarios entrelazados (Arrighi y Grattage, 2010; Bleh et al., 2012).</p>
@@ -519,32 +520,32 @@
       <div id="warnings"></div>
       <div id="hud">Cargando WebAssembly…</div>
       <canvas id="diag"></canvas>
-      <div class="hint">Izquierda: IPR(t) (azul) y número de solitones (naranja). Derecha: espectro de potencias de
+      <div class="hint" data-i18n="diag_hint">Izquierda: IPR(t) (azul) y número de solitones (naranja). Derecha: espectro de potencias de
         densidad P(k), en escala logarítmica, con la marca de la escala de condensación prevista k*.</div>
     </section>
 
     <aside>
       <details open>
-        <summary>Simulación</summary>
+        <summary data-i18n="sum_sim">Simulación</summary>
         <div class="body">
           <div class="row" style="flex-wrap:nowrap">
-            <label for="scenario" style="min-width:64px">Escenario</label>
+            <label for="scenario" style="min-width:64px" data-i18n="lbl_scenario">Escenario</label>
             <select id="scenario" style="flex:1;min-width:0">
-              <option value="0">Materia</option>
-              <option value="1">Vórtices: cargas cuantizadas (2D)</option>
-              <option value="2">Dirac: espín ½ (2D y 3D)</option>
-              <option value="3">Weyl: quiralidad (3D, o 2D con k_z fijo)</option>
-              <option value="4">Luz (2D)</option>
-              <option value="5">Kaplan 4+1D</option>
-              <option value="6">Modelo estándar (3D)</option>
-              <option value="7">Dirac 3D sin dobladores (Wilson)</option>
-              <option value="8">Skyrmiones (3D)</option>
-              <option value="9">Floquet anómalo (2D)</option>
-              <option value="10">Gravedad análoga</option>
+              <option value="0" data-i18n="sc_0">Materia</option>
+              <option value="1" data-i18n="sc_1">Vórtices: cargas cuantizadas (2D)</option>
+              <option value="2" data-i18n="sc_2">Dirac: espín ½ (2D y 3D)</option>
+              <option value="3" data-i18n="sc_3">Weyl: quiralidad (3D, o 2D con k_z fijo)</option>
+              <option value="4" data-i18n="sc_4">Luz (2D)</option>
+              <option value="5" data-i18n="sc_5">Kaplan 4+1D</option>
+              <option value="6" data-i18n="sc_6">Modelo estándar (3D)</option>
+              <option value="7" data-i18n="sc_7">Dirac 3D sin dobladores (Wilson)</option>
+              <option value="8" data-i18n="sc_8">Skyrmiones (3D)</option>
+              <option value="9" data-i18n="sc_9">Floquet anómalo (2D)</option>
+              <option value="10" data-i18n="sc_10">Gravedad análoga</option>
             </select>
           </div>
           <div class="row" style="flex-wrap:nowrap">
-            <label for="grid" style="min-width:64px">Malla</label>
+            <label for="grid" style="min-width:64px" data-i18n="lbl_grid">Malla</label>
             <select id="grid" style="flex:1;min-width:0">
               <optgroup label="2D">
                 <option value="2d-128">128²</option>
@@ -564,20 +565,20 @@
             </select>
           </div>
           <div class="row">
-            <button id="btn-soup" class="primary" title="Ruido suavizado en la banda focalizante (§3, punto 2)">Sopa
+            <button id="btn-soup" class="primary" title="Ruido suavizado en la banda focalizante (§3, punto 2)" data-i18n="btn_soup">Sopa
               primordial</button>
-            <label for="seed">semilla</label>
+            <label for="seed" data-i18n="lbl_seed">semilla</label>
             <input id="seed" type="text" size="10" placeholder="aleatoria">
           </div>
           <div class="row">
             <button id="btn-pause">Pausa</button>
-            <button id="btn-step">Paso a paso</button>
-            <button id="btn-clear">Limpiar campo</button>
-            <button id="btn-clear-bar">Limpiar barreras</button>
+            <button id="btn-step" data-i18n="btn_step">Paso a paso</button>
+            <button id="btn-clear" data-i18n="btn_clear">Limpiar campo</button>
+            <button id="btn-clear-bar" data-i18n="btn_clear_bar">Limpiar barreras</button>
           </div>
           <div class="row">
-            <button id="btn-col-in">Colisión en fase</button>
-            <button id="btn-col-anti">Colisión en contrafase</button>
+            <button id="btn-col-in" data-i18n="btn_col_in">Colisión en fase</button>
+            <button id="btn-col-anti" data-i18n="btn_col_anti">Colisión en contrafase</button>
           </div>
           <div class="hint" id="collision-hint">Dos paquetes enfrentados con k = ±0,15, σ = 3 celdas y norma 300 en 2D
             (3000 en 3D, en el mismo z): por encima del umbral de existencia, así que cada uno forma un solitón (§3.3).
@@ -860,7 +861,7 @@
       </details>
 
       <details id="p-pairs">
-        <summary>Laboratorio de pares (§2.23)</summary>
+        <summary data-i18n="sum_pairs">Laboratorio de pares (§2.23)</summary>
         <div class="body">
           <div class="row"><label for="pl-proc">Proceso</label><select id="pl-proc">
               <option value="sch">Schwinger 1D</option>
@@ -989,71 +990,71 @@
       </details>
 
       <details open>
-        <summary>Parámetros (en vivo)</summary>
+        <summary data-i18n="sum_params">Parámetros (en vivo)</summary>
         <div class="body">
-          <div class="slider"><label for="s-g">g (&gt; 0 atrae)</label><input id="s-g" type="range" min="-0.2" max="0.5"
+          <div class="slider"><label for="s-g" data-i18n="lbl_g">g (&gt; 0 atrae)</label><input id="s-g" type="range" min="-0.2" max="0.5"
               step="0.005" value="0.1"><output id="o-g"></output></div>
-          <div class="slider"><label for="s-emax">E_max (saturación)</label><input id="s-emax" type="range" min="0.1"
+          <div class="slider"><label for="s-emax" data-i18n="lbl_emax">E_max (saturación)</label><input id="s-emax" type="range" min="0.1"
               max="4" step="0.05" value="1"><output id="o-emax"></output></div>
-          <div class="slider"><label for="s-m">m (masa de la moneda)</label><input id="s-m" type="range" min="0"
+          <div class="slider"><label for="s-m" data-i18n="lbl_m">m (masa de la moneda)</label><input id="s-m" type="range" min="0"
               max="1.5" step="0.01" value="0.5"><output id="o-m"></output></div>
-          <div class="slider"><label for="s-alpha">α (vecinos)</label><input id="s-alpha" type="range" min="0" max="1"
+          <div class="slider"><label for="s-alpha" data-i18n="lbl_alpha">α (vecinos)</label><input id="s-alpha" type="range" min="0" max="1"
               step="0.05" value="0.5"><output id="o-alpha"></output></div>
           <div class="slider"><label for="s-cap">E_cap/E_max</label><input id="s-cap" type="range" min="0" max="60"
               step="1" value="20"><output id="o-cap"></output></div>
-          <div class="slider"><label for="s-spf">pasos por frame</label><input id="s-spf" type="range" min="1" max="64"
+          <div class="slider"><label for="s-spf" data-i18n="lbl_spf">pasos por frame</label><input id="s-spf" type="range" min="1" max="64"
               step="1" value="4"><output id="o-spf"></output></div>
-          <div class="slider"><label for="s-br">radio del pincel</label><input id="s-br" type="range" min="2" max="20"
+          <div class="slider"><label for="s-br" data-i18n="lbl_br">radio del pincel</label><input id="s-br" type="range" min="2" max="20"
               step="1" value="6"><output id="o-br"></output></div>
-          <div class="slider"><label for="s-ba">cantidad del pincel</label><input id="s-ba" type="range" min="1"
+          <div class="slider"><label for="s-ba" data-i18n="lbl_ba">cantidad del pincel</label><input id="s-ba" type="range" min="1"
               max="200" step="1" value="20"><output id="o-ba"></output></div>
-          <div class="hint">E_cap/E_max = 0 desactiva el tope. Valores por debajo de 10 se saltan a 10 (§2.5).</div>
+          <div class="hint" data-i18n="hint_cap">E_cap/E_max = 0 desactiva el tope. Valores por debajo de 10 se saltan a 10 (§2.5).</div>
         </div>
       </details>
 
       <details open>
-        <summary>Herramientas y vista</summary>
+        <summary data-i18n="sum_tools">Herramientas y vista</summary>
         <div class="body">
-          <div class="row"><label>Botón izquierdo</label>
-            <span class="seg" id="tool-seg"><button data-tool="inject" class="on">Inyectar</button><button
-                data-tool="inspect">Inspeccionar</button></span>
+          <div class="row"><label data-i18n="lbl_lclick">Botón izquierdo</label>
+            <span class="seg" id="tool-seg"><button data-tool="inject" class="on" data-i18n="btn_inject">Inyectar</button><button
+                data-tool="inspect" data-i18n="btn_inspect">Inspeccionar</button></span>
           </div>
-          <div class="row"><label for="bar-type">Clic derecho</label>
+          <div class="row"><label for="bar-type" data-i18n="lbl_rclick">Clic derecho</label>
             <select id="bar-type">
-              <option value="wall">Muro (reflexión)</option>
-              <option value="pot">Potencial V</option>
-              <option value="mass">Masa −m (pared, Dirac)</option>
+              <option value="wall" data-i18n="opt_wall">Muro (reflexión)</option>
+              <option value="pot" data-i18n="opt_pot">Potencial V</option>
+              <option value="mass" data-i18n="opt_mass">Masa −m (pared, Dirac)</option>
             </select>
           </div>
-          <div class="slider"><label for="s-v">v del potencial</label><input id="s-v" type="range" min="-1" max="1"
+          <div class="slider"><label for="s-v" data-i18n="lbl_v">v del potencial</label><input id="s-v" type="range" min="-1" max="1"
               step="0.05" value="0.5"><output id="o-v"></output></div>
-          <div class="hint">Mayús + arrastre izquierdo: al soltar, un paquete con k proporcional al arrastre (|k| ≤
+          <div class="hint" data-i18n="hint_mouse">Mayús + arrastre izquierdo: al soltar, un paquete con k proporcional al arrastre (|k| ≤
             0,6). Clic derecho + arrastre: pinta barreras.</div>
-          <div class="row"><label for="color-mode">Color</label>
+          <div class="row"><label for="color-mode" data-i18n="lbl_color">Color</label>
             <select id="color-mode">
-              <option value="0">Fase (tono) y coherencia</option>
-              <option value="1">Dirección del flujo</option>
-              <option value="2">Potencial gravitatorio Φ (con gravedad)</option>
-              <option value="3">Espín (Dirac)</option>
-              <option value="4">Campo gauge (U(1): B; SU(N): energía eléctrica y magnética)</option>
-              <option value="5">Carga de color (SU(N))</option>
-              <option value="6">Higgs: 1 − |φ|/v con B (con el Higgs)</option>
+              <option value="0" data-i18n="col_0">Fase (tono) y coherencia</option>
+              <option value="1" data-i18n="col_1">Dirección del flujo</option>
+              <option value="2" data-i18n="col_2">Potencial gravitatorio Φ (con gravedad)</option>
+              <option value="3" data-i18n="col_3">Espín (Dirac)</option>
+              <option value="4" data-i18n="col_4">Campo gauge (U(1): B; SU(N): energía eléctrica y magnética)</option>
+              <option value="5" data-i18n="col_5">Carga de color (SU(N))</option>
+              <option value="6" data-i18n="col_6">Higgs: 1 − |φ|/v con B (con el Higgs)</option>
             </select>
           </div>
           <div class="row" id="view3d" hidden>
-            <label>Vista 3D</label>
+            <label data-i18n="lbl_view3d">Vista 3D</label>
             <span class="seg" id="view-seg"><button data-view="0" class="on">MIP</button><button
-                data-view="1">Corte</button></span>
+                data-view="1" data-i18n="btn_slice">Corte</button></span>
             <label for="s-slice">z</label><input id="s-slice" type="range" min="0" max="47" step="1" value="24"><output
               id="o-slice"></output>
           </div>
-          <div class="slider"><label for="s-gamma">exponente del brillo γ</label><input id="s-gamma" type="range"
+          <div class="slider"><label for="s-gamma" data-i18n="lbl_gamma">exponente del brillo γ</label><input id="s-gamma" type="range"
               min="0.25" max="3" step="0.05" value="0.5"><output id="o-gamma"></output></div>
-          <div class="hint">b = (E_eff/E_max)^γ. La especificación usa γ = 0,5; en la vista MIP 3D se sube a 2, porque
+          <div class="hint" data-i18n="hint_gamma">b = (E_eff/E_max)^γ. La especificación usa γ = 0,5; en la vista MIP 3D se sube a 2, porque
             el máximo de cada columna de fondo ya está cerca de E_max y con 0,5 todo sale brillante.</div>
-          <div class="row"><label for="units">Unidades</label>
+          <div class="row"><label for="units" data-i18n="lbl_units">Unidades</label>
             <select id="units">
-              <option value="lattice">Red</option>
+              <option value="lattice" data-i18n="u_lat">Red</option>
               <option value="planck">Planck</option>
               <option value="si">SI</option>
             </select>
@@ -1063,7 +1064,7 @@
       </details>
 
       <details id="p-em">
-        <summary>Electromagnetismo U(1) (§2.9–§2.10)</summary>
+        <summary data-i18n="sum_em">Electromagnetismo U(1) (§2.9–§2.10)</summary>
         <div class="body">
           <div class="row"><label for="em-mode">Campo</label>
             <select id="em-mode">
@@ -1134,7 +1135,7 @@
       </details>
 
       <details id="p-higgs">
-        <summary>Mecanismo de Higgs (§2.12)</summary>
+        <summary data-i18n="sum_higgs">Mecanismo de Higgs (§2.12)</summary>
         <div class="body">
           <div class="row"><label for="higgs-mode">Higgs</label>
             <select id="higgs-mode">
@@ -1220,7 +1221,7 @@
       </details>
 
       <details id="p-grav">
-        <summary>Gravedad (§2.6)</summary>
+        <summary data-i18n="sum_grav">Gravedad (§2.6)</summary>
         <div class="body">
           <div class="row"><label for="grav-mode">Modo</label>
             <select id="grav-mode">
@@ -1246,7 +1247,7 @@
       </details>
 
       <details>
-        <summary>Qué es y qué no (resumen honesto)</summary>
+        <summary data-i18n="sum_about">Qué es y qué no (resumen honesto)</summary>
         <div class="body about">
           <p><b>Emergencia pre-térmica, no equilibrio.</b> Un paso es un mapa no lineal que solo conserva la norma: a la
             larga todo se calienta hasta ruido de temperatura infinita (Di Molfetta et al., 2015; Moorcroft et al.,
@@ -1269,15 +1270,15 @@
 
   <section id="lab">
     <details open>
-      <summary>Laboratorio de partículas</summary>
+      <summary data-i18n="sum_lab">Laboratorio de partículas</summary>
       <div class="body">
         <div class="lab-grid">
           <div class="card" id="inspector">
-            <h3>Solitón inspeccionado</h3>
-            <div id="insp-body" class="hint">Elige la herramienta «Inspeccionar» y haz clic sobre un solitón.</div>
+            <h3 data-i18n="h_insp">Solitón inspeccionado</h3>
+            <div id="insp-body" class="hint" data-i18n="insp_hint">Elige la herramienta «Inspeccionar» y haz clic sobre un solitón.</div>
           </div>
           <div class="card">
-            <h3>Población <span class="hint" id="pop-count"></span></h3>
+            <h3><span data-i18n="h_pop">Población</span> <span class="hint" id="pop-count"></span></h3>
             <div class="tablewrap">
               <table id="pop-table">
                 <thead></thead>
@@ -1285,21 +1286,22 @@
               </table>
             </div>
             <canvas class="plot" id="hist"></canvas>
-            <div class="hint">Histograma de masas N: muestra si surgen "especies" con masas típicas. Detección:
+            <div class="hint" data-i18n="hist_hint">Histograma de masas N: muestra si surgen "especies" con masas típicas. Detección:
               componentes conexas con E &gt; 8·⟨E⟩ y al menos 5 celdas (umbrales orientativos).</div>
           </div>
         </div>
-        <div class="hint">Los experimentos se ejecutan con α = 0 y sin tope, como en §3.3, y dejan esos valores en los
+        <div class="hint" data-i18n="exp_intro">Los experimentos se ejecutan con α = 0 y sin tope, como en §3.3, y dejan esos valores en los
           controles. Cada uno muestra la predicción, la medida y el veredicto con la tolerancia de §5.</div>
         <div class="exp-toolbar" id="exp-toolbar">
-          <button type="button" class="filter-btn on" data-filter="all">Todos</button>
-          <button type="button" class="filter-btn" data-filter="research">Investigación: Vías A, B y C (128–139)</button>
-          <button type="button" class="filter-btn" data-filter="lorentz">Lorentz &amp; QCA 3+1D</button>
-          <button type="button" class="filter-btn" data-filter="gravity">Gravedad &amp; Causal Sets</button>
-          <button type="button" class="filter-btn" data-filter="qft">QFT, Gauge &amp; Tensor Networks</button>
+          <button type="button" class="filter-btn on" data-filter="all" data-i18n="flt_all">Todos</button>
+          <button type="button" class="filter-btn" data-filter="research" data-i18n="flt_research">Investigación: Vías A, B y C (128–139)</button>
+          <button type="button" class="filter-btn" data-filter="lorentz" data-i18n="flt_lorentz">Lorentz &amp; QCA 3+1D</button>
+          <button type="button" class="filter-btn" data-filter="gravity" data-i18n="flt_gravity">Gravedad &amp; Causal Sets</button>
+          <button type="button" class="filter-btn" data-filter="qft" data-i18n="flt_qft">QFT, Gauge &amp; Tensor Networks</button>
           <span class="hint" id="exp-count"></span>
           <input type="search" id="exp-search" placeholder="Buscar por número o tema…">
         </div>
+        <div class="hint" id="en-legacy-note" hidden>Research experiments 128–139 (Pathways A, B, and C) include English titles and descriptions below; foundational interactive experiments 1–127 remain in Spanish. See <a href="https://github.com/JoMaCaCha/qca-spacetime-lab/blob/main/RESEARCH_SUMMARY.md" target="_blank" rel="noopener" style="color:var(--accent)">RESEARCH_SUMMARY.md</a> for full English documentation.</div>
         <div class="exps" id="exps"></div>
       </div>
     </details>
@@ -1754,8 +1756,8 @@
     });
     $('btn-vbg').addEventListener('click', () => { if (S.labRunning || S.scenario !== 1) return; S.u.seed_uniform_background(0.5, 1e-3, (Math.random() * 2 ** 31) >>> 0); resetHistory(); });
     $('btn-soup').addEventListener('click', () => { if (!S.labRunning) seedSoup(); });
-    $('btn-pause').addEventListener('click', () => { S.paused = !S.paused; $('btn-pause').textContent = S.paused ? 'Reanudar' : 'Pausa'; });
-    $('btn-step').addEventListener('click', () => { if (!S.labRunning) { S.paused = true; $('btn-pause').textContent = 'Reanudar'; S.u.step(); } });
+    $('btn-pause').addEventListener('click', () => { S.paused = !S.paused; updatePauseLabel(); });
+    $('btn-step').addEventListener('click', () => { if (!S.labRunning) { S.paused = true; updatePauseLabel(); S.u.step(); } });
     $('btn-clear').addEventListener('click', () => { if (!S.labRunning) { S.u.clear(); resetHistory(); } });
     $('btn-clear-bar').addEventListener('click', () => { if (!S.labRunning) S.u.clear_barriers(); });
     function collision(phase) {
@@ -2004,7 +2006,7 @@
       const pad = 8 * dpr, half = (W - 3 * pad) / 2, ph = H - 2 * pad;
       const topBand = 34 * dpr, plotH = Math.max(10, ph - topBand);
       // IPR(t) y número de solitones
-      drawAxes(dctx, pad, pad, half, ph, 'IPR(t) y número de solitones');
+      drawAxes(dctx, pad, pad, half, ph, LANG === 'en' ? 'IPR(t) and soliton count' : 'IPR(t) y número de solitones');
       if (S.hist.length > 1) {
         const ipr = S.hist.map(h => h.ipr), ns = S.hist.map(h => h.n);
         const imax = Math.max(2, ...ipr) * 1.1, nmax = Math.max(1, ...ns) * 1.1;
@@ -2015,8 +2017,8 @@
         ns.forEach((v, i) => { const y = pad + topBand + (1 - v / nmax) * plotH; i ? dctx.lineTo(X(i), y) : dctx.moveTo(X(i), y); }); dctx.stroke();
         const iy = pad + topBand + (1 - (1 + 1 / S.nc) / imax) * plotH;
         dctx.setLineDash([4 * dpr, 4 * dpr]); dctx.strokeStyle = '#555'; dctx.beginPath(); dctx.moveTo(pad, iy); dctx.lineTo(pad + half, iy); dctx.stroke(); dctx.setLineDash([]);
-        const iprLbl = `IPR máx ${imax.toFixed(1)}`;
-        const solLbl = `solitones máx ${Math.round(nmax / 1.1)}`;
+        const iprLbl = (LANG === 'en' ? 'IPR max ' : 'IPR máx ') + imax.toFixed(1);
+        const solLbl = (LANG === 'en' ? 'solitons max ' : 'solitones máx ') + Math.round(nmax / 1.1);
         dctx.fillStyle = '#6cb6ff'; dctx.fillText(iprLbl, pad + 6 * dpr, pad + 28 * dpr);
         dctx.fillStyle = '#f0883e'; dctx.fillText(solLbl, pad + 18 * dpr + dctx.measureText(iprLbl).width, pad + 28 * dpr);
       }
@@ -2025,7 +2027,7 @@
       if (phase11Diag(x1, pad, half, ph)) return;
       if (phase9Diag(x1, pad, half, ph)) return;
       if (S.autoSpec) { drawAutoSpec(x1, pad, half, ph); return; }
-      drawAxes(dctx, x1, pad, half, ph, 'espectro de potencias de densidad P(k) (log)');
+      drawAxes(dctx, x1, pad, half, ph, LANG === 'en' ? 'Density power spectrum P(k) (log)' : 'espectro de potencias de densidad P(k) (log)');
       const len = S.u.spectrum_len();
       const sp = f32view(S.u.spectrum_ptr(), len);
       const dk = S.u.spectrum_dk(); const kmax = len * dk;
@@ -2154,6 +2156,141 @@
       drawOverlay();
     }
 
+    // ---------------------------------------------------------------- idioma ligero (EN | ES)
+    let LANG = (() => {
+      try {
+        const saved = localStorage.getItem('qca_lang');
+        if (saved === 'en' || saved === 'es') return saved;
+      } catch (_) {}
+      return (navigator.language || '').toLowerCase().startsWith('es') ? 'es' : 'en';
+    })();
+    const I18N_EN = {
+      cta_research: 'Research Experiments (Pathways A–C)',
+      diag_hint: 'Left: IPR(t) (blue) and soliton count (orange). Right: density power spectrum P(k) on log scale, with predicted condensation scale k*.',
+      sum_sim: 'Simulation',
+      lbl_scenario: 'Scenario',
+      sc_0: 'Matter',
+      sc_1: 'Vortices: quantized charges (2D)',
+      sc_2: 'Dirac: spin-½ (2D & 3D)',
+      sc_3: 'Weyl: chirality (3D, or 2D fixed k_z)',
+      sc_4: 'Light (2D)',
+      sc_5: 'Kaplan 4+1D',
+      sc_6: 'Classical Standard Model (3D)',
+      sc_7: 'Doubler-free 3D Dirac (Wilson)',
+      sc_8: 'Skyrmions (3D)',
+      sc_9: 'Anomalous Floquet (2D)',
+      sc_10: 'Analog gravity',
+      lbl_grid: 'Grid',
+      btn_soup: 'Primordial soup',
+      lbl_seed: 'seed',
+      btn_step: 'Step',
+      btn_clear: 'Clear field',
+      btn_clear_bar: 'Clear barriers',
+      btn_col_in: 'In-phase collision',
+      btn_col_anti: 'Out-of-phase collision',
+      sum_pairs: 'Pair Laboratory (§2.23)',
+      sum_params: 'Parameters (live)',
+      lbl_g: 'g (> 0 attracts)',
+      lbl_emax: 'E_max (saturation)',
+      lbl_m: 'm (coin mass)',
+      lbl_alpha: 'α (neighbors)',
+      lbl_spf: 'steps per frame',
+      lbl_br: 'brush radius',
+      lbl_ba: 'brush amount',
+      hint_cap: 'E_cap/E_max = 0 disables the cap. Values below 10 snap to 10.',
+      sum_tools: 'Tools & View',
+      lbl_lclick: 'Left click',
+      btn_inject: 'Inject',
+      btn_inspect: 'Inspect',
+      lbl_rclick: 'Right click',
+      opt_wall: 'Wall (reflection)',
+      opt_pot: 'Potential V',
+      opt_mass: 'Mass −m (domain wall, Dirac)',
+      lbl_v: 'potential V',
+      hint_mouse: 'Shift + left drag: release a wavepacket with momentum k proportional to drag (|k| ≤ 0.6). Right drag: paint barriers.',
+      lbl_color: 'Color',
+      col_0: 'Phase (hue) & coherence',
+      col_1: 'Flux direction',
+      col_2: 'Gravitational potential Φ (gravity mode)',
+      col_3: 'Spin (Dirac)',
+      col_4: 'Gauge field (U(1): B; SU(N): electric & magnetic energy)',
+      col_5: 'Color charge (SU(N))',
+      col_6: 'Higgs: 1 − |φ|/v with B',
+      lbl_view3d: '3D view',
+      btn_slice: 'Slice',
+      lbl_gamma: 'brightness gamma γ',
+      hint_gamma: 'b = (E_eff/E_max)^γ. Default γ = 0.5; in 3D MIP view it rises to 2 to avoid saturating the background.',
+      lbl_units: 'Units',
+      u_lat: 'Lattice',
+      sum_em: 'U(1) Electromagnetism (§2.9–§2.10)',
+      sum_higgs: 'Higgs Mechanism (§2.12)',
+      sum_grav: 'Gravity (§2.6)',
+      sum_about: 'What it is and what it is not (honest summary)',
+      sum_lab: 'Particle & Experiment Laboratory',
+      h_insp: 'Inspected soliton',
+      insp_hint: 'Select the "Inspect" tool and click on a soliton.',
+      h_pop: 'Population',
+      hist_hint: 'Mass histogram N showing whether typical soliton "species" emerge (connected components with E > 8⟨E⟩, ≥ 5 cells).',
+      exp_intro: 'Each experiment runs directly inside the WebAssembly SIMD engine and reports prediction, measurement, and pass/fail tolerance.',
+      flt_all: 'All',
+      flt_research: 'Research: Pathways A, B & C (128–139)',
+      flt_lorentz: 'Lorentz & 3+1D QCA',
+      flt_gravity: 'Gravity & Causal Sets',
+      flt_qft: 'QFT, Gauge & Tensor Networks',
+    };
+    const HEADER_SUB_HTML = {
+      es: 'Laboratorio computacional en <b>Rust + WebAssembly SIMD</b> para autómatas celulares cuánticos (3+1D), fenomenología de Lorentz, conjuntos causales 2D con materia cuántica y QFT en red 1+1D (DMRG/TDVP). El modo base interactivo es una <b>onda clásica de campo medio</b> (caminata cuántica discreta con Kerr saturable, sin entrelazamiento), distinta de los QCA unitarios entrelazados (Arrighi y Grattage, 2010; Bleh et al., 2012).',
+      en: 'Computational physics laboratory in <b>Rust + WebAssembly SIMD</b> for 3+1D quantum cellular automata (QCA), Lorentz-violation phenomenology, 2D causal-set quantum gravity, and 1+1D tensor-network lattice QFT (DMRG/TDVP). The default interactive mode is a <b>classical mean-field wave</b> (nonlinear saturable-Kerr quantum walk without entanglement), distinct from entangled unitary QCAs (Arrighi &amp; Grattage, 2010; Bleh et al., 2012).',
+    };
+    const EXP_EN = {
+      128: { title: 'Study 1: IR Lorentz restoration vs. mass gap (2 interacting species)', desc: 'Open question #1: In an interacting 1+1D two-species lattice QFT with unequal bare speeds (v_A = 1.0, v_B = 0.45), can strong coupling equalize IR speeds without opening a mass gap or breaking U(1)_A × U(1)_B? Combines exact Lanczos, dynamical structure factor S_{αα}(q, ω), RK4 flavor transfer, and DMRG entanglement.' },
+      129: { title: 'Study 2: Classification of 8 3+1D QCA families & isotropic n = 4 QCA', desc: 'Open question #2: Exhaustive classification of 8 local unitary 3+1D QCA families (SC, BCC, FCC; 2, 4, and 6 components) under CPT-evenness, doubler freedom, and O(k²Δx²) isotropy, plus our palindromic 4-component SC+FCC Wilson–Dirac construction (r = 2/√3) with exact n = 4 Lorentz invariance.' },
+      130: { title: 'Study 3: Dynamic 2D causal sets coupled to quantum scalar matter', desc: 'Open question #3: Verifies Johnston’s exact discrete retarded propagator G_R against ½J₀(mτ) on 2D Minkowski sprinklings and couples N_f = 0, 1, 2 quantum scalar fields via the 1-loop Sorkin–Johnston spectral action S_mat = ½ ln det(I + ΔᵀΔ) inside the 2D Benincasa–Dowker path integral.' },
+      131: { title: 'Pathway A: Real-space 3+1D n = 4 QCA (exact U(1), S₂ vs S₄) & Yee-4 photon', desc: 'Strictly local 6³ real-space circuit of Iso-SC+FCC Wilson–Dirac with symmetric L-path U(1) Peierls links: checks unitarity, local gauge invariance, and exact Gauss’s law; compares S₂ vs S₄ via exact 32×32 Bloch matrix; audits 5 3+1D photon QCAs (Mlodinow–Brun 2025, Bisio et al. 2016, Eon et al. 2023, and Yee-4 S₄).' },
+      132: { title: 'Pathway B: 2D causal-set Parallel Tempering (Sorkin–Johnston vs Ising)', desc: '12-replica Parallel Tempering across the Surya phase transition (N = 20–48 in qsu_cli), comparing pure 2D causal-set gravity, 1-loop Sorkin–Johnston quantum matter (N_f = 1, 2), and classical link-Ising matter with block-bootstrap error bars and Madras–Sokal autocorrelation times.' },
+      133: { title: 'Pathway C: IR Lorentz restoration via U(1) gauge confinement (2-flavor Schwinger)', desc: 'Couples two species (v_A = 1.0, v_B = 0.45) with exact U(1)_A × U(1)_B conservation to a shared quantum electric field J Σ E_r²: exact Lanczos shows velocity locking toward √(v_A v_B) for all J > 0, validated against U(1)-block DMRG with exact un-truncated D = 7 MPO.' },
+      134: { title: 'Pathway A (Chiral 4+1D): Isotropic n = 4 Weyl modes in Kaplan–Sen slab', desc: 'Embeds Iso-SC+FCC and Symanzik-4 kernels into a 4+1D open Kaplan–Sen slab (L_s = 14): cuts boundary Weyl O(k²) anisotropy by > 4,000× with zero doublers while preserving exact Golterman–Shamir opposite-boundary chirality cancellation.' },
+      135: { title: 'Pathway B (Adaptive PT + FSS): 20-replica scaling to N = 64', desc: 'Adaptive 20-replica Parallel Tempering (Katzgraber–Trebst) and finite-size scaling N ∈ {20, 28, 36, 48, 64}: pure gravity and Sorkin–Johnston (N_f = 1, 2) converge to d_MM(∞) = 2.00, while classical link-Ising collapses to d_∞ ≈ 1.61.' },
+      136: { title: 'Pathway C (Continuum + CFT + BKT): Constant-M_S L scaling & 3+1D QED contrast', desc: 'Constant physical Schwinger-mass trajectory (J = 8/N_r² → √(v_A v_B)), Calabrese–Cardy central-charge halving up to L = 64, strong-coupling lattice BKT Néel gap induced by Δ_eff = (v_A² + v_B²)/(2 v_A v_B) > 1, and contrast with 3+1D perturbative Coulomb QED RG.' },
+      137: { title: 'Pathway A (Real-Space Yee-4 S₄): 6³ coupled QED & 16³ oblique birefringence', desc: 'Couples Iso-SC+FCC S₄ fermion to the local fourth-order symplectic Maxwell Hamiltonian Yee-4 S₄ in real 3D 6³ (Gauss = 8.18e-16) and propagates polarized waves in 16³: 4,341× better isotropy than Yee-2 and 16,571× less 45° oblique birefringence than Mlodinow–Brun (2025).' },
+      138: { title: 'Pathway B (Multicanonical Wang–Landau): 1st-order barrier, mass m & large-N_f FSS', desc: 'Flatness-controlled Wang–Landau + frozen-g(S) multicanonical production directly measures latent heat Δs and free-energy barrier ΔF > 0 across the Surya transition, verifies near-massless stability (m = 0.05), and maps the large-N_f = 8 finite-size crossover.' },
+      139: { title: 'Pathway C (Real-Time 2-site U(1)-TDVP + BKT): Light-cone synchronization & Néel phase', desc: 'Evolves local U(1)_A × U(1)_B-conserving density wavepackets in real time via complex 2-site U(1)-TDVP on the exact D = 7 MPO (L = 20 in WASM; L = 32 in qsu_cli), showing 5–8× light-cone synchronization at J = 0.50 and mapping the strong-coupling BKT Néel phase.' },
+    };
+    function updatePauseLabel() {
+      const b = $('btn-pause');
+      if (!b) return;
+      b.textContent = S.paused ? (LANG === 'en' ? 'Resume' : 'Reanudar') : (LANG === 'en' ? 'Pause' : 'Pausa');
+    }
+    function applyLang(lang) {
+      LANG = (lang === 'en') ? 'en' : 'es';
+      document.documentElement.lang = LANG;
+      try { localStorage.setItem('qca_lang', LANG); } catch (_) {}
+      document.querySelectorAll('#lang-seg button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        if (!el.dataset.es) el.dataset.es = el.textContent;
+        const k = el.dataset.i18n;
+        el.textContent = (LANG === 'en' && I18N_EN[k]) ? I18N_EN[k] : el.dataset.es;
+      });
+      if ($('header-subtitle')) $('header-subtitle').innerHTML = HEADER_SUB_HTML[LANG];
+      if ($('seed')) $('seed').placeholder = LANG === 'en' ? 'random' : 'aleatoria';
+      if ($('exp-search')) $('exp-search').placeholder = LANG === 'en' ? 'Search by number or topic…' : 'Buscar por número o tema…';
+      updatePauseLabel();
+      for (const e of EXP) {
+        const card = $('exp-' + e.id);
+        if (!card) continue;
+        const en = EXP_EN[e.id];
+        const h4 = card.querySelector('h4');
+        const desc = card.querySelector('.desc');
+        const btn = card.querySelector('button[data-exp]');
+        if (h4) h4.textContent = `${e.id}. ${(LANG === 'en' && en) ? en.title : e.title}`;
+        if (desc) desc.innerHTML = (LANG === 'en' && en) ? en.desc : e.desc;
+        if (btn) btn.textContent = LANG === 'en' ? 'Run' : 'Ejecutar';
+      }
+      if ($('en-legacy-note')) $('en-legacy-note').hidden = (LANG !== 'en');
+      applyExperimentFilter();
+      if (S.u) drawDiag();
+    }
+
     // ---------------------------------------------------------------- experimentos
     const EXP = [];
     let expFilter = 'all';
@@ -2171,12 +2308,14 @@
         const card = $('exp-' + e.id);
         if (!card) continue;
         const inGroup = expFilter === 'all' || (EXP_GROUPS[expFilter] && EXP_GROUPS[expFilter].has(e.id));
-        const inSearch = !q || `${e.id} ${e.title} ${e.desc}`.toLowerCase().includes(q);
+        const en = EXP_EN[e.id];
+        const hay = `${e.id} ${e.title} ${e.desc} ${en ? en.title + ' ' + en.desc : ''}`.toLowerCase();
+        const inSearch = !q || hay.includes(q);
         const vis = inGroup && inSearch;
         card.hidden = !vis;
         if (vis) shown++;
       }
-      if ($('exp-count')) $('exp-count').textContent = `Mostrando ${shown} de ${EXP.length}`;
+      if ($('exp-count')) $('exp-count').textContent = LANG === 'en' ? `Showing ${shown} of ${EXP.length}` : `Mostrando ${shown} de ${EXP.length}`;
     }
     function setExperimentFilter(name) {
       expFilter = name;
@@ -2189,6 +2328,7 @@
     <div class="progress"><div id="exp-pr-${e.id}"></div></div><div class="res" id="exp-res-${e.id}"></div></div>`).join('');
       $('exps').querySelectorAll('button[data-exp]').forEach(b => b.addEventListener('click', () => runExperiment(parseInt(b.dataset.exp, 10))));
       document.querySelectorAll('#exp-toolbar .filter-btn').forEach(b => b.addEventListener('click', () => setExperimentFilter(b.dataset.filter)));
+      document.querySelectorAll('#lang-seg button').forEach(b => b.addEventListener('click', () => applyLang(b.dataset.lang)));
       if ($('exp-search')) $('exp-search').addEventListener('input', applyExperimentFilter);
       if ($('btn-jump-research')) $('btn-jump-research').addEventListener('click', () => {
         const labDet = document.querySelector('#lab > details');
@@ -2196,7 +2336,7 @@
         setExperimentFilter('research');
         $('exp-toolbar').scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
-      applyExperimentFilter();
+      applyLang(LANG);
     }
     async function runExperiment(id) {
       if (S.labRunning) return;

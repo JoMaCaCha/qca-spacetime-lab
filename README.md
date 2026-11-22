@@ -23,8 +23,9 @@ A zero-framework, high-performance computational laboratory written in **Rust + 
 - `scripts/`: Standalone Python/NumPy/SciPy verification scripts (`verify_via_a_mlodinow_brun.py`, `verify_via_c_schwinger_exact.py`) and publication figure/table generator (`generate_publication_assets.py`).
 - `datos_investigacion/`: Reproducible CSV/JSON outputs and 20 adaptive Parallel Tempering checkpoints.
 - `figuras_publicacion/`: Publication-ready vector figures (`fig_via_{a,b,c}.{pdf,svg,png}`) and LaTeX summary tables (`tablas_latex.tex`).
-- `index.html`: Zero-dependency ES-module WebAssembly interactive laboratory (139 experiments).
-- [`ANALISIS.md`](ANALISIS.md) and [`estudio_preguntas_abiertas.md`](estudio_preguntas_abiertas.md): Detailed Spanish physical analysis and reproducible study report across Phases 1–20.
+- `index.html`: Zero-dependency ES-module WebAssembly interactive laboratory (139 experiments, bilingual `EN | ES` UI).
+- [`RESEARCH_SUMMARY.md`](RESEARCH_SUMMARY.md): Self-contained **English technical summary** of Pathways A, B, and C (Phases 17–20, equations, verified tables, and referee-grade convergence/multi-seed audits).
+- [`ANALISIS.md`](ANALISIS.md) and [`estudio_preguntas_abiertas.md`](estudio_preguntas_abiertas.md): Detailed Spanish physical analysis and Phase 17 study report across Phases 1–20.
 
 ## Quick Start (Build, Verify & Run)
 
