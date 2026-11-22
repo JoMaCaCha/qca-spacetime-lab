@@ -39,9 +39,23 @@
     header {
       padding: 10px 16px;
       border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .header-inner {
+      max-width: 1460px;
+      margin: 0 auto;
       display: flex;
-      gap: 16px;
-      align-items: baseline;
+      gap: 10px 16px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
@@ -49,19 +63,56 @@
       margin: 0;
       font-size: 18px;
       font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-family: var(--mono);
+      text-decoration: none;
+      color: var(--accent);
+      background: #13263a;
+      border: 1px solid #25486d;
+    }
+
+    .pill:hover {
+      background: #1b3652;
+      border-color: var(--accent);
+    }
+
+    .pill.cta {
+      color: #d8dee9;
+      background: #1f3b5c;
+      border-color: #35679c;
+      cursor: pointer;
     }
 
     header p {
-      margin: 0;
+      margin: 4px 0 0;
       color: var(--muted);
-      max-width: 1000px;
+      max-width: 1460px;
+      font-size: 12.5px;
     }
 
     main {
+      max-width: 1460px;
+      margin: 0 auto;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 380px;
-      gap: 12px;
-      padding: 12px 16px;
+      grid-template-columns: minmax(0, 1fr) 390px;
+      gap: 14px;
+      padding: 14px 16px;
     }
 
     @media (max-width: 1000px) {
@@ -80,10 +131,13 @@
     #canvas-wrap {
       position: relative;
       width: 100%;
-      max-width: min(100%, 86vh);
+      max-width: min(100%, 76vh);
+      margin: 0 auto;
       aspect-ratio: 1 / 1;
       background: #000;
       border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
     }
 
     #view,
@@ -246,7 +300,43 @@
     }
 
     #lab {
-      padding: 0 16px 24px;
+      max-width: 1460px;
+      margin: 0 auto;
+      padding: 0 16px 28px;
+    }
+
+    .exp-toolbar {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+      padding: 8px 10px;
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    .exp-toolbar button.filter-btn {
+      font-size: 12px;
+      padding: 4px 10px;
+    }
+
+    .exp-toolbar button.filter-btn.on {
+      background: #1f3b5c;
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .exp-toolbar input[type=search] {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font: inherit;
+      font-size: 12px;
+      min-width: 210px;
+      margin-left: auto;
     }
 
     #lab>details>.body {
@@ -404,12 +494,20 @@
 
 <body>
   <header>
-    <h1>Juego de la Vida Cuántico</h1>
-    <p>Caminata cuántica discreta con una no linealidad Kerr saturable sobre una malla toroidal 2D o 3D: una <b>onda
-        clásica de campo medio</b>, no lineal y sin entrelazamiento. Está inspirada en los autómatas celulares cuánticos
-      como modelos discretos del espacio-tiempo, pero no es uno de ellos. El nombre ya se usó para autómatas celulares
-      cuánticos unitarios con entrelazamiento (Arrighi y Grattage, 2010; Bleh, Calarco y Montangero, 2012), que son otra
-      cosa.</p>
+    <div class="header-inner">
+      <div class="brand">
+        <h1>QCA Spacetime Lab</h1>
+        <div class="badges">
+          <a class="pill" href="https://github.com/JoMaCaCha/qca-spacetime-lab" target="_blank" rel="noopener">GitHub</a>
+          <a class="pill" href="https://doi.org/10.5281/zenodo.24450504" target="_blank" rel="noopener">DOI 10.5281/zenodo.24450504</a>
+          <button class="pill cta" id="btn-jump-research" type="button">Experimentos de investigación (Vías A–C)</button>
+        </div>
+      </div>
+      <p>Laboratorio computacional en <b>Rust + WebAssembly SIMD</b> para autómatas celulares cuánticos (3+1D),
+        fenomenología de Lorentz, conjuntos causales 2D con materia cuántica y QFT en red 1+1D (DMRG/TDVP). El modo base
+        interactivo es una <b>onda clásica de campo medio</b> (caminata cuántica discreta con Kerr saturable, sin
+        entrelazamiento), distinta de los QCA unitarios entrelazados (Arrighi y Grattage, 2010; Bleh et al., 2012).</p>
+    </div>
   </header>
 
   <main>
@@ -429,9 +527,9 @@
       <details open>
         <summary>Simulación</summary>
         <div class="body">
-          <div class="row">
-            <label for="scenario">Escenario</label>
-            <select id="scenario">
+          <div class="row" style="flex-wrap:nowrap">
+            <label for="scenario" style="min-width:64px">Escenario</label>
+            <select id="scenario" style="flex:1;min-width:0">
               <option value="0">Materia</option>
               <option value="1">Vórtices: cargas cuantizadas (2D)</option>
               <option value="2">Dirac: espín ½ (2D y 3D)</option>
@@ -444,8 +542,10 @@
               <option value="9">Floquet anómalo (2D)</option>
               <option value="10">Gravedad análoga</option>
             </select>
-            <label for="grid">Malla</label>
-            <select id="grid">
+          </div>
+          <div class="row" style="flex-wrap:nowrap">
+            <label for="grid" style="min-width:64px">Malla</label>
+            <select id="grid" style="flex:1;min-width:0">
               <optgroup label="2D">
                 <option value="2d-128">128²</option>
                 <option value="2d-160">160² (disco)</option>
@@ -1191,6 +1291,15 @@
         </div>
         <div class="hint">Los experimentos se ejecutan con α = 0 y sin tope, como en §3.3, y dejan esos valores en los
           controles. Cada uno muestra la predicción, la medida y el veredicto con la tolerancia de §5.</div>
+        <div class="exp-toolbar" id="exp-toolbar">
+          <button type="button" class="filter-btn on" data-filter="all">Todos</button>
+          <button type="button" class="filter-btn" data-filter="research">Investigación: Vías A, B y C (128–139)</button>
+          <button type="button" class="filter-btn" data-filter="lorentz">Lorentz &amp; QCA 3+1D</button>
+          <button type="button" class="filter-btn" data-filter="gravity">Gravedad &amp; Causal Sets</button>
+          <button type="button" class="filter-btn" data-filter="qft">QFT, Gauge &amp; Tensor Networks</button>
+          <span class="hint" id="exp-count"></span>
+          <input type="search" id="exp-search" placeholder="Buscar por número o tema…">
+        </div>
         <div class="exps" id="exps"></div>
       </div>
     </details>
@@ -1885,13 +1994,15 @@
     window.addEventListener('resize', () => { resizeDiag(); resizeOverlay(); });
 
     function drawAxes(ctx, x0, y0, w, h, title) {
+      const dpr = window.devicePixelRatio || 1;
       ctx.strokeStyle = '#2a3240'; ctx.lineWidth = 1; ctx.strokeRect(x0, y0, w, h);
-      ctx.fillStyle = '#8b95a7'; ctx.fillText(title, x0 + 6, y0 + 14);
+      ctx.fillStyle = '#8b95a7'; ctx.fillText(title, x0 + 6 * dpr, y0 + 14 * dpr);
     }
     function drawDiag() {
       const W = diag.width, H = diag.height, dpr = window.devicePixelRatio || 1;
       dctx.clearRect(0, 0, W, H); dctx.font = `${11 * dpr}px system-ui`;
       const pad = 8 * dpr, half = (W - 3 * pad) / 2, ph = H - 2 * pad;
+      const topBand = 34 * dpr, plotH = Math.max(10, ph - topBand);
       // IPR(t) y número de solitones
       drawAxes(dctx, pad, pad, half, ph, 'IPR(t) y número de solitones');
       if (S.hist.length > 1) {
@@ -1899,13 +2010,15 @@
         const imax = Math.max(2, ...ipr) * 1.1, nmax = Math.max(1, ...ns) * 1.1;
         const X = (i) => pad + i / (S.hist.length - 1) * half;
         dctx.strokeStyle = '#6cb6ff'; dctx.lineWidth = 1.5 * dpr; dctx.beginPath();
-        ipr.forEach((v, i) => { const y = pad + ph - v / imax * ph; i ? dctx.lineTo(X(i), y) : dctx.moveTo(X(i), y); }); dctx.stroke();
+        ipr.forEach((v, i) => { const y = pad + topBand + (1 - v / imax) * plotH; i ? dctx.lineTo(X(i), y) : dctx.moveTo(X(i), y); }); dctx.stroke();
         dctx.strokeStyle = '#f0883e'; dctx.beginPath();
-        ns.forEach((v, i) => { const y = pad + ph - v / nmax * ph; i ? dctx.lineTo(X(i), y) : dctx.moveTo(X(i), y); }); dctx.stroke();
-        const iy = pad + ph - (1 + 1 / S.nc) / imax * ph;
+        ns.forEach((v, i) => { const y = pad + topBand + (1 - v / nmax) * plotH; i ? dctx.lineTo(X(i), y) : dctx.moveTo(X(i), y); }); dctx.stroke();
+        const iy = pad + topBand + (1 - (1 + 1 / S.nc) / imax) * plotH;
         dctx.setLineDash([4 * dpr, 4 * dpr]); dctx.strokeStyle = '#555'; dctx.beginPath(); dctx.moveTo(pad, iy); dctx.lineTo(pad + half, iy); dctx.stroke(); dctx.setLineDash([]);
-        dctx.fillStyle = '#6cb6ff'; dctx.fillText(`IPR máx ${imax.toFixed(1)}`, pad + 6, pad + 28 * dpr);
-        dctx.fillStyle = '#f0883e'; dctx.fillText(`solitones máx ${Math.round(nmax / 1.1)}`, pad + 6, pad + 42 * dpr);
+        const iprLbl = `IPR máx ${imax.toFixed(1)}`;
+        const solLbl = `solitones máx ${Math.round(nmax / 1.1)}`;
+        dctx.fillStyle = '#6cb6ff'; dctx.fillText(iprLbl, pad + 6 * dpr, pad + 28 * dpr);
+        dctx.fillStyle = '#f0883e'; dctx.fillText(solLbl, pad + 18 * dpr + dctx.measureText(iprLbl).width, pad + 28 * dpr);
       }
       // P(k)
       const x1 = 2 * pad + half;
@@ -2043,12 +2156,47 @@
 
     // ---------------------------------------------------------------- experimentos
     const EXP = [];
+    let expFilter = 'all';
+    const EXP_GROUPS = {
+      research: new Set([128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139]),
+      lorentz: new Set([109, 117, 119, 121, 126, 127, 129, 131, 134, 137]),
+      gravity: new Set([7, 8, 9, 10, 11, 12, 49, 50, 52, 62, 77, 101, 102, 103, 104, 105, 106, 107, 118, 124, 125, 130, 132, 135, 138]),
+      qft: new Set([81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 110, 111, 112, 114, 115, 116, 122, 123, 128, 133, 136, 139]),
+    };
     function addExperiment(def) { EXP.push(def); }
+    function applyExperimentFilter() {
+      const q = ($('exp-search')?.value || '').trim().toLowerCase();
+      let shown = 0;
+      for (const e of EXP) {
+        const card = $('exp-' + e.id);
+        if (!card) continue;
+        const inGroup = expFilter === 'all' || (EXP_GROUPS[expFilter] && EXP_GROUPS[expFilter].has(e.id));
+        const inSearch = !q || `${e.id} ${e.title} ${e.desc}`.toLowerCase().includes(q);
+        const vis = inGroup && inSearch;
+        card.hidden = !vis;
+        if (vis) shown++;
+      }
+      if ($('exp-count')) $('exp-count').textContent = `Mostrando ${shown} de ${EXP.length}`;
+    }
+    function setExperimentFilter(name) {
+      expFilter = name;
+      document.querySelectorAll('#exp-toolbar .filter-btn').forEach(b => b.classList.toggle('on', b.dataset.filter === name));
+      applyExperimentFilter();
+    }
     function renderExperiments() {
       $('exps').innerHTML = EXP.map(e => `<div class="exp" id="exp-${e.id}"><h4>${e.id}. ${e.title}</h4><div class="desc">${e.desc}</div>
     <div class="row"><button data-exp="${e.id}" class="primary">Ejecutar</button><span class="hint" id="exp-st-${e.id}"></span></div>
     <div class="progress"><div id="exp-pr-${e.id}"></div></div><div class="res" id="exp-res-${e.id}"></div></div>`).join('');
       $('exps').querySelectorAll('button[data-exp]').forEach(b => b.addEventListener('click', () => runExperiment(parseInt(b.dataset.exp, 10))));
+      document.querySelectorAll('#exp-toolbar .filter-btn').forEach(b => b.addEventListener('click', () => setExperimentFilter(b.dataset.filter)));
+      if ($('exp-search')) $('exp-search').addEventListener('input', applyExperimentFilter);
+      if ($('btn-jump-research')) $('btn-jump-research').addEventListener('click', () => {
+        const labDet = document.querySelector('#lab > details');
+        if (labDet) labDet.open = true;
+        setExperimentFilter('research');
+        $('exp-toolbar').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      applyExperimentFilter();
     }
     async function runExperiment(id) {
       if (S.labRunning) return;
