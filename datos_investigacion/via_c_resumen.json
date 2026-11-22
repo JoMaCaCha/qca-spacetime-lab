@@ -1,0 +1,11 @@
+{
+  "via": "C",
+  "n_rungs_exact": 10,
+  "v_a": 1.0,
+  "v_b": 0.45,
+  "v_geom_pred": 0.670820,
+  "u1_dmrg_xxz_e": -0.368019,
+  "mpo6_exact_err": 5.539726e-10,
+  "c_eff_j0": 2.3929,
+  "c_eff_j15": 1.5476
+}

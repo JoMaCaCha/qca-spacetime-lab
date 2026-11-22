@@ -1,0 +1,32 @@
+# Rust & Cargo
+/target/
+**/*.rs.bk
+
+# WebAssembly build output (reproducible via `wasm-pack build --target web --release` and built in CI)
+/pkg/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.nav
+*.snm
+*Notes.bib
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

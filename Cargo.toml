@@ -1,0 +1,25 @@
+[package]
+name = "qca_spacetime_lab"
+version = "1.0.0"
+edition = "2021"
+description = "QCA Spacetime Lab: computational laboratory for 3+1D quantum cellular automata, discrete spacetime (causal sets), and 1+1D tensor-network lattice QFT in Rust + WebAssembly"
+repository = "https://github.com/JoMaCaCha/qca-spacetime-lab"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+rustfft = { version = "6", features = ["wasm_simd"] }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-simd"]
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[profile.dev]
+opt-level = 1

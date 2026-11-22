@@ -1,0 +1,15 @@
+{
+  "via": "A",
+  "dt": 0.25,
+  "r_wilson": 1.1547005383792517,
+  "grid_realspace": "6x6x6",
+  "norm_drift": 4.762857e-14,
+  "gauss_residual": 1.287750e-14,
+  "gauge_density_err": 1.370432e-16,
+  "gauge_e_err": 1.982858e-13,
+  "s2_a2_spread": 1.278332e-3,
+  "s2_a2_mean": -1.564694e-1,
+  "s4_a2_spread": 6.055285e-4,
+  "s4_a2_mean": -1.860622e-3,
+  "s4_corner_gap": 2.309536
+}

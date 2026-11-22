@@ -1,0 +1,17 @@
+{
+  "via": "C-scaling",
+  "v_geom": 0.670820,
+  "v_inf_lin": 0.628130,
+  "v_inf_quad": 0.588019,
+  "r2_cont": 0.987657,
+  "c_fit_j0": 2.3950,
+  "r2_j0": 0.99932,
+  "c_hi_j0": 2.2436,
+  "c_fit_j1": 0.6921,
+  "r2_j1": 0.60850,
+  "c_hi_j1": -1.9369,
+  "mis_uv": 0.7586,
+  "mis_3d_coulomb_ir": 0.5267,
+  "rg_factor_3d_phot": 0.3347,
+  "mis_1d_schwinger_ir": 0.000000
+}

@@ -1,0 +1,17 @@
+{
+  "via": "A-Yee4",
+  "norm_drift": 4.762857e-14,
+  "gauss_residual": 8.183558e-16,
+  "gauge_dens_err": 1.249001e-16,
+  "gauge_e_err": 1.620926e-14,
+  "c_ax_yee2": 1.00510806,
+  "c_dg_yee2": 1.00834561,
+  "c_ax_yee4": 0.99988939,
+  "c_dg_yee4": 0.99988864,
+  "c_obl_yee4": 0.99880880,
+  "pol_leak_yee4_45deg": 3.842296e-5,
+  "pol_rot_mlodinow_brun": 0.636715,
+  "biref_suppression_ratio": 16571.20,
+  "max_energy_drift_yee4": 1.104013e-6,
+  "aniso_improvement_yee2_over_yee4": 4340.59
+}

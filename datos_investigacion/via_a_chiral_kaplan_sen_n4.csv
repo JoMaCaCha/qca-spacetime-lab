@@ -1,0 +1,4 @@
+modelo,chi_left,chi_right,net_chiral,a2_spread,a2_mean,corner_gap,tier
+SC-Kaplan-Sen,0.997370,-0.997370,-7.327472e-15,1.110637e-1,-1.095895e-1,1.483451,0
+Iso-SC+FCC-Kaplan-Sen,0.997370,-0.997370,-7.327472e-15,2.665254e-5,-1.665979e-1,1.483451,1
+Symanzik4-Kaplan-Sen,0.997395,-0.997395,-3.108624e-15,1.894733e-4,-1.065188e-4,1.483451,2

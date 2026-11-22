@@ -1,0 +1,11 @@
+{
+  "via": "B-FSS",
+  "replicas": 20,
+  "sizes": [20, 28, 36, 48, 64],
+  "fits": [
+    {"mode": "Puro(Nf=0)", "gamma_chi": 0.8923, "r2_chi": 0.3593, "dmm_inf": 1.9968, "dmm_slope": 0.3763, "beta_c_inf": 0.0645, "min_swap": 0.2321, "binder_min_64": -0.1545},
+    {"mode": "SJ(Nf=1)", "gamma_chi": 2.0284, "r2_chi": 0.8255, "dmm_inf": 1.9974, "dmm_slope": 0.8761, "beta_c_inf": 0.0588, "min_swap": 0.2380, "binder_min_64": -0.1879},
+    {"mode": "SJ(Nf=2)", "gamma_chi": 0.9883, "r2_chi": 0.7110, "dmm_inf": 1.9938, "dmm_slope": 1.3321, "beta_c_inf": 0.0622, "min_swap": 0.2052, "binder_min_64": -0.6191},
+    {"mode": "Ising(J=0.45)", "gamma_chi": 1.1401, "r2_chi": 0.8099, "dmm_inf": 1.6115, "dmm_slope": 6.1149, "beta_c_inf": 0.0327, "min_swap": 0.1778, "binder_min_64": -0.1445}
+  ]
+}

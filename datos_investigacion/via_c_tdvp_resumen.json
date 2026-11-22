@@ -1,0 +1,13 @@
+{
+  "via": "C-TDVP-BKT",
+  "nr_tdvp": 16,
+  "l_sites": 32,
+  "chi_tdvp": 36,
+  "vA_LC_J0": 1.064845,
+  "vB_LC_J0": 0.473607,
+  "mismatch_LC_J0": 0.768615,
+  "vA_LC_J050": 0.748703,
+  "vB_LC_J050": 0.870396,
+  "mismatch_LC_J050": 0.150323,
+  "max_energy_drift": 2.196642e-5
+}

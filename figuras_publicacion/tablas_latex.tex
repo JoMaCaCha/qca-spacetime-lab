@@ -1,0 +1,74 @@
+% Tablas LaTeX generadas automaticamente por scripts/generate_publication_assets.py
+% Requiere \usepackage{booktabs,amsmath} en el preambulo.
+
+% ======================== TABLA VIA A ========================
+\begin{table}[t]
+\centering
+\caption{Auditoria espectral unificada 3+1D (fermiones QCA locales $S_2$ vs $S_4$, fotones publicados y nuevo foton gauge-invariante Yee-4 $S_4$) y extension quiral 4+1D de Kaplan--Sen.}
+\label{tab:via_a_audit}
+\begin{tabular}{lccccc}
+\toprule
+Modelo & Asim.\ CPT ($n=1$) & $\mathrm{spread}(A_2)$ & $\langle A_2\rangle$ & Hueco BZ & $n=4$ \\
+\midrule
+Fermion-IsoSCFCC-S2 & $3.00e-15$ & $1.28e-03$ & $-1.56e-01$ & $0.000$ & No \\
+Fermion-IsoSCFCC-S4 & $7.22e-15$ & $6.06e-04$ & $-1.86e-03$ & $2.310$ & Si \\
+Mlodinow-Brun-2025 & $7.45e-03$ & $1.85e-02$ & $-8.03e-03$ & $0.000$ & No \\
+Bisio-DAriano-Perinotti-2016 & $8.17e-03$ & $7.18e-02$ & $-3.53e-02$ & $0.680$ & No \\
+Eon-et-al-Fijo-2023 & $7.45e-03$ & $1.85e-02$ & $-8.03e-03$ & $0.000$ & No \\
+Eon-et-al-Palindromico-2023 & $0.00e+00$ & $2.78e-02$ & $-1.70e-02$ & $2.094$ & No \\
+Yee4-S4-Nuevo & $0.00e+00$ & $1.04e-05$ & $-6.64e-06$ & $2.314$ & Si \\
+\midrule
+\multicolumn{6}{l}{\textit{Extension quiral 4+1D en losa abierta Kaplan--Sen ($L_s=14,\ m=0.55$, suma $\langle\gamma^5\rangle_L+\langle\gamma^5\rangle_R \approx 0$):}} \\
+SC-Kaplan-Sen & $7.33e-15$ & $1.11e-01$ & $-1.10e-01$ & $1.483$ & No \\
+Iso-SC+FCC-Kaplan-Sen & $7.33e-15$ & $2.67e-05$ & $-1.67e-01$ & $1.483$ & Iso \\
+Symanzik4-Kaplan-Sen & $3.11e-15$ & $1.89e-04$ & $-1.07e-04$ & $1.483$ & Si ($n=4$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ======================== TABLA VIA B ========================
+\begin{table}[t]
+\centering
+\caption{Conjuntos causales 2D acoplados a materia: extrapolacion FSS adaptativa ($20$ replicas, $N=20\text{--}64$) y caracterizacion multicanonica Wang--Landau de la transicion de primer orden de Surya.}
+\label{tab:via_b_wl_fss}
+\begin{tabular}{lcccccc}
+\toprule
+Modelo / Corrida WL & $N$ & $\beta_c$ & $\chi_{\mathrm{pico}}$ & $\Delta s$ & $\Delta F$ & $d_{\mathrm{MM}}(\beta=0)$ \\
+\midrule
+Puro ($N_f=0$) & 20 & $0.132$ & $268.3$ & $9.29$ & $1.57$ & $2.003$ \\
+Puro ($N_f=0$) & 28 & $0.098$ & $419.9$ & $5.36$ & $0.59$ & $2.061$ \\
+Puro ($N_f=0$) & 36 & $0.092$ & $791.2$ & $10.86$ & $2.67$ & $2.008$ \\
+Puro ($N_f=0$) & 48 & $0.088$ & $1134.8$ & $11.57$ & $2.12$ & $2.012$ \\
+SJ ($N_f=1$) & 20 & $0.122$ & $298.8$ & $9.75$ & $1.53$ & $2.050$ \\
+SJ ($N_f=1$) & 28 & $0.088$ & $288.1$ & $4.82$ & $1.37$ & $1.982$ \\
+SJ ($N_f=1$) & 36 & $0.094$ & $527.4$ & $9.14$ & $1.50$ & $2.025$ \\
+\midrule
+\multicolumn{7}{l}{\textit{Ajustes FSS adaptativos $N \in \{20,28,36,48,64\}$ ($d_{\mathrm{MM}}(N) = d_\infty + b/N$):}} \\
+Puro(Nf=0) & $\infty$ & $0.0645$ & $\gamma=0.89$ & -- & $B_{4,\min}=-0.15$ & $1.9968$ \\
+SJ(Nf=1) & $\infty$ & $0.0588$ & $\gamma=2.03$ & -- & $B_{4,\min}=-0.19$ & $1.9974$ \\
+SJ(Nf=2) & $\infty$ & $0.0622$ & $\gamma=0.99$ & -- & $B_{4,\min}=-0.62$ & $1.9938$ \\
+Ising(J=0.45) & $\infty$ & $0.0327$ & $\gamma=1.14$ & -- & $B_{4,\min}=-0.14$ & $1.6115$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ======================== TABLA VIA C ========================
+\begin{table}[t]
+\centering
+\caption{Modelo de Schwinger 1+1D de dos sabores ($v_A=1, v_B\neq v_A$, $U(1)_A\times U(1)_B$ exacto): diagrama de fases BKT de Neel ($N_r=16\to 24$) y evolucion en tiempo real 2-site $U(1)$-TDVP ($L=32$, $2^{32}$ estados).}
+\label{tab:via_c_bkt_tdvp}
+\begin{tabular}{cccccc}
+\toprule
+$v_B / v_A$ & $J$ & $\Delta_{\mathrm{ef}}$ & $S_{\mathrm{vN}}(N_r=16)$ & $c_{\mathrm{eff}}(16\to 24)$ & $C_{\mathrm{Neel}}(d=4)$ \\
+\midrule
+$1.00$ & $1.00$ & $1.000$ & $0.9160$ & $+1.379$ & $+0.0616$ \\
+$1.00$ & $2.50$ & $1.000$ & $0.7902$ & $+1.214$ & $+0.1041$ \\
+$0.45$ & $1.00$ & $1.336$ & $0.8749$ & $+1.383$ & $+0.1041$ \\
+$0.45$ & $2.50$ & $1.336$ & $0.7504$ & $+1.234$ & $+0.1830$ \\
+$0.25$ & $1.00$ & $2.125$ & $0.9157$ & $+1.649$ & $+0.2219$ \\
+$0.25$ & $2.50$ & $2.125$ & $0.8410$ & $-3.878$ & $+0.4410$ \\
+\midrule
+\multicolumn{6}{l}{2-site $U(1)$-TDVP ($L=32$, $\chi=36$): $J=0\ (v_A=1.065,\ v_B=0.474,\ \mathrm{mis}=0.769) \to J=0.50\ (v_A=0.749,\ v_B=0.870,\ \mathrm{mis}=0.150)$, $\delta E=2.20e-05$.} \\
+\bottomrule
+\end{tabular}
+\end{table}

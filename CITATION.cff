@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "QCA Spacetime Lab: Quantum Cellular Automata, Discrete Spacetime, and Lattice QFT in Rust + WebAssembly"
+message: "If you use this software, datasets, or verification scripts in your research, please cite it using the metadata below."
+type: software
+authors:
+  - family-names: Cabrera Chavarro
+    given-names: Johan Manuel
+    email: "johan.m.cabrera.ch@gmail.com"
+    orcid: "https://orcid.org/0000-0002-7696-4741"
+    affiliation: "Independent Researcher, Neiva, Huila, Colombia"
+repository-code: "https://github.com/JoMaCaCha/qca-spacetime-lab"
+url: "https://jomacacha.github.io/qca-spacetime-lab/"
+license: MIT
+version: "1.0.0"
+date-released: "2026-11-22"
+keywords:
+  - quantum cellular automata
+  - Lorentz invariance violation
+  - birefringence
+  - causal set theory
+  - Sorkin-Johnston vacuum
+  - Schwinger model
+  - tensor networks
+  - DMRG
+  - TDVP
+  - WebAssembly
