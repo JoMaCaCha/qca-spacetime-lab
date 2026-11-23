@@ -1,11 +1,11 @@
 # QCA Spacetime Lab (Rust + WebAssembly SIMD)
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24450504.svg)](https://doi.org/10.5281/zenodo.24450504)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24450503.svg)](https://doi.org/10.5281/zenodo.24450503)
 
 A zero-framework, high-performance computational laboratory written in **Rust + WebAssembly (`+simd128`)** with a native multithreaded CLI (`qsu_cli`) and standalone **Python/NumPy/SciPy** cross-verification scripts. It explores **quantum cellular automata (QCA)**, **Lorentz-violation phenomenology**, **2D causal-set quantum gravity**, and **1+1D tensor-network lattice QFT (DMRG / 2-site TDVP)**, alongside a real-time browser laboratory featuring **139 interactive experiments** and **194 automated Rust unit tests**.
 
 - **Interactive Web Lab (GitHub Pages):** https://jomacacha.github.io/qca-spacetime-lab/
-- **Archival DOI (Zenodo v1.0.0):** https://doi.org/10.5281/zenodo.24450504 (all versions: https://doi.org/10.5281/zenodo.24450503)
+- **Archival DOI (Zenodo, latest version):** https://doi.org/10.5281/zenodo.24450503 (v1.0.0 snapshot: https://doi.org/10.5281/zenodo.24450504)
 - **Author:** Johan Manuel Cabrera Chavarro ([ORCID 0000-0002-7696-4741](https://orcid.org/0000-0002-7696-4741))
 - **License:** MIT (code) / CC BY 4.0 (datasets and figures) — see [LICENSE](LICENSE) and [CITATION.cff](CITATION.cff).
 
