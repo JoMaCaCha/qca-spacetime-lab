@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Independent Python / NumPy / SciPy verification of Pathway A:
-  1. Direct 6x6 momentum-space QCA of Mlodinow & Brun (PRD 112, 074513, 2025; arXiv:2506.20136):
-       U_MB(k) = diag(R(k), R(-k)),   R(k) = R_z(k_z) R_y(k_y) R_x(k_x) in SO(3)
+  1. Direct 6x6 momentum-space QCA of Mlodinow & Brun (PRD 112, 074513, 2025; arXiv:2506.20136, Eqs. (16)-(17)):
+       U_MB(k) = diag(R(k), R(-k)),   R(k) = R_x(k_x) R_y(k_y) R_z(k_z) in SO(3)
      explicitly proves:
-     (a) cos(omega_+(k)) = 1/2 (cos kx cos ky + cos kx cos kz + cos ky cos kz + sin kx sin ky sin kz - 1),
+     (a) cos(omega_+(k)) = 1/2 (cos kx cos ky + cos kx cos kz + cos ky cos kz - sin kx sin ky sin kz - 1)
+         (upper block) and cos(omega_-(k)) = cos(omega_+(-k)) with + sin kx sin ky sin kz (lower block, Eq. (42)),
      (b) omega_+(k) != omega_-(k) = omega_+(-k) at O(k^2): exact birefringence
-           Delta_omega(k) = omega_+(k) - omega_-(k) = - k_x k_y k_z / |k| + O(k^4),
+           Delta_omega(k) = omega_+(k) - omega_-(k) = + k_x k_y k_z / |k| + O(k^4),
      (c) Direct real-field linear polarization rotation of (E, B) = (Re psi, Im psi) in 3D:
-         the physical polarization plane rotates at rate Delta_omega / 2 = -1/2 (n_x n_y n_z) k^2!
+         the physical polarization plane rotates at rate Delta_omega / 2 = +1/2 (n_x n_y n_z) k^2!
   2. Exact spherical average <(n_x n_y n_z)^2> = 1/105 and exact Wigner/Y_{3m} expansion of
      -1/2 (n_x n_y n_z) under SO(3) rotations against Kislat & Krawczynski (PRD 95, 083013, 2017,
      Table IV) giving worst-case SO(3) profile-chi^2 exclusion bounds at 95% CL and 5-sigma.
@@ -55,10 +56,10 @@ def rot_z(a: float) -> np.ndarray:
 
 
 def mlodinow_brun_matrix_and_omega(k: np.ndarray) -> tuple[np.ndarray, float, float]:
-    """Build exact 6x6 U_MB(k) = diag(R(k), R(-k)) and extract positive-helicity and negative-helicity frequencies."""
+    """Build exact 6x6 U_MB(k) = diag(R(k), R(-k)) matching Eqs. (16)-(17) of arXiv:2506.20136 verbatim."""
     kx, ky, kz = float(k[0]), float(k[1]), float(k[2])
-    R_p = rot_z(kz) @ rot_y(ky) @ rot_x(kx)
-    R_m = rot_z(-kz) @ rot_y(-ky) @ rot_x(-kx)
+    R_p = rot_x(kx) @ rot_y(ky) @ rot_z(kz)
+    R_m = rot_x(-kx) @ rot_y(-ky) @ rot_z(-kz)
     U6 = np.block([[R_p, np.zeros((3, 3))], [np.zeros((3, 3)), R_m]])
     # Eigenvalues of SO(3) rotation R(k) are {1, e^{+i omega_+}, e^{-i omega_+}}
     ev_p = np.linalg.eigvals(R_p)
@@ -97,7 +98,7 @@ def main() -> int:
     print("=== Independent Python/NumPy/SciPy Verification — Pathway A (Mlodinow-Brun vs Yee-4 S4) ===\n")
 
     # 1. Verify Mlodinow-Brun 6x6 unitary matrix, exact trace formula, and O(k^2) birefringence
-    print("[1] Direct 6x6 Mlodinow-Brun QCA: U(k) = diag(R_z R_y R_x(k), R_z R_y R_x(-k)):")
+    print("[1] Direct 6x6 Mlodinow-Brun QCA: U(k) = diag(R_x R_y R_z(k), R_x R_y R_z(-k)) [Eqs. (16)-(17)]:")
     k_dir = np.array([2.0, 1.0, 1.0])
     n_hat = k_dir / np.linalg.norm(k_dir)
     nxyz = float(n_hat[0] * n_hat[1] * n_hat[2])
@@ -106,16 +107,14 @@ def main() -> int:
         U6, om_p, om_m = mlodinow_brun_matrix_and_omega(k)
         # Check exact unitarity U^dag U = I
         assert np.max(np.abs(U6.T @ U6 - np.eye(6))) < 1e-14
-        # Check exact closed-form trace formula
+        # Check exact closed-form trace formula for upper block R_x R_y R_z (- sin kx sin ky sin kz)
         tr_p = (math.cos(k[0]) * math.cos(k[1]) + math.cos(k[0]) * math.cos(k[2])
-                + math.cos(k[1]) * math.cos(k[2]) + math.sin(k[0]) * math.sin(k[1]) * math.sin(k[2]))
+                + math.cos(k[1]) * math.cos(k[2]) - math.sin(k[0]) * math.sin(k[1]) * math.sin(k[2]))
         om_p_closed = math.acos(max(-1.0, min(1.0, 0.5 * (tr_p - 1.0))))
         assert abs(om_p - om_p_closed) < 1e-13
-        # Check asymptotic coefficient (om_p - om_m) / k^2 -> - n_x n_y n_z (exact!)
-        # Wait: note sign convention of R_z R_y R_x: sin kx sin ky sin kz enters with + in cos(om),
-        # so cos(om_p) - cos(om_m) = sin kx sin ky sin kz => om_p - om_m = - n_x n_y n_z k^2 + O(k^4)!
+        # Check asymptotic coefficient (om_p - om_m) / k^2 -> + n_x n_y n_z (exact!)
         coeff_num = (om_p - om_m) / (kmag ** 2)
-        print(f"  |k|={kmag:.4f}: om_+={om_p:.8f}, om_-={om_m:.8f}, (om_+ - om_-)/|k|^2 = {coeff_num:+.6f} (exact -n_x n_y n_z = {-nxyz:+.6f})")
+        print(f"  |k|={kmag:.4f}: om_+={om_p:.8f}, om_-={om_m:.8f}, (om_+ - om_-)/|k|^2 = {coeff_num:+.6f} (exact +n_x n_y n_z = {+nxyz:+.6f})")
 
     # Verify exact real-field polarization rotation directly by iterating U6^T on a linearly polarized wave!
     # A real transverse EM wave E(t) = Re(psi_+(t) + psi_-(t)) starts along a real unit vector e1 perp k
@@ -147,7 +146,7 @@ def main() -> int:
     # Sample 1,500 Haar-uniform SO(3) orientations via scipy.spatial.transform.Rotation
     rng = np.random.default_rng(20250620)
     rots = Rotation.random(1500, random_state=rng).as_matrix()
-    fvals = -0.5 * dirs[:, 0] * dirs[:, 1] * dirs[:, 2] * wq  # (ndirs,)
+    fvals = +0.5 * dirs[:, 0] * dirs[:, 1] * dirs[:, 2] * wq  # (ndirs,)
     s_chi2_list = []
     for R in rots:
         s_dirs = dirs @ R.T
