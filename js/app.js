@@ -6478,9 +6478,32 @@ addExperiment({
 });
 
 // ---------------------------------------------------------------- arranque
-renderExperiments();
-unitsHint();
-resizeDiag();
-createUniverse('2d-256');
-seedSoup();
-S.rafId = requestAnimationFrame(frame);
+async function boot() {
+  if (location.protocol === 'file:') {
+    renderBootError('file');
+    return;
+  }
+  if (typeof WebAssembly === 'undefined' || !WebAssembly.validate(WASM_SIMD_PROBE)) {
+    renderBootError('simd');
+    return;
+  }
+  try {
+    wasm = await init();
+  } catch (err) {
+    renderBootError('load', err);
+    return;
+  }
+  try {
+    renderExperiments();
+    unitsHint();
+    resizeDiag();
+    createUniverse('2d-256');
+    seedSoup();
+    S.rafId = requestAnimationFrame(frame);
+  } catch (err) {
+    console.error('Boot initialization failed:', err);
+    showFatalBanner(err);
+  }
+}
+
+boot();
