@@ -6,13 +6,92 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      full_test_suite:
+        description: "Run complete 195-test Rust library suite (otherwise runs fast Clippy + Phases 18-20)"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
+  detect-changes:
+    name: Detect Changed Paths
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      python: ${{ steps.filter.outputs.python }}
+      pages: ${{ steps.filter.outputs.pages }}
+      full_rust: ${{ steps.filter.outputs.full_rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify modified paths
+        id: filter
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "pages=true" >> "$GITHUB_OUTPUT"
+            if [ "${{ inputs.full_test_suite }}" = "true" ]; then
+              echo "full_rust=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "full_rust=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "Mode: workflow_dispatch (full_test_suite=${{ inputs.full_test_suite }})"
+            exit 0
+          fi
+
+          echo "full_rust=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "No valid base commit ($BASE); enabling all fast jobs."
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "pages=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "Changed files:"
+          printf '%s\n' "$CHANGED"
+
+          RUST=false
+          PYTHON=false
+          PAGES=false
+
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/|Cargo\.(toml|lock)$|\.github/workflows/ci\.yml$)'; then
+            RUST=true
+          fi
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(scripts/|requirements-ci\.txt$|src/|\.github/workflows/ci\.yml$)'; then
+            PYTHON=true
+          fi
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/|Cargo\.(toml|lock)$|index\.html$|styles/|js/|\.github/workflows/ci\.yml$)'; then
+            PAGES=true
+          fi
+
+          echo "rust=$RUST" >> "$GITHUB_OUTPUT"
+          echo "python=$PYTHON" >> "$GITHUB_OUTPUT"
+          echo "pages=$PAGES" >> "$GITHUB_OUTPUT"
+          echo "Detected -> rust=$RUST python=$PYTHON pages=$PAGES full_rust=false"
+
   rust-tests:
-    name: Rust Clippy, CLI Check & Full Test Suite (195 tests)
+    name: Rust Clippy, CLI Check & Research Tests
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,11 +103,20 @@ jobs:
         run: cargo clippy --locked --all-targets
       - name: Check native CLI binary (qsu_cli)
         run: cargo check --locked --bin qsu_cli
+      - name: Run fast Rust research suites (Phases 18-20)
+        if: needs.detect-changes.outputs.full_rust != 'true'
+        run: |
+          cargo test --release --locked --lib tests::phase18 -- --nocapture
+          cargo test --release --locked --lib tests::phase19 -- --nocapture
+          cargo test --release --locked --lib tests::phase20 -- --nocapture
       - name: Run full Rust library test suite (195 tests)
+        if: needs.detect-changes.outputs.full_rust == 'true'
         run: cargo test --release --locked --lib
 
   python-independent-verification:
     name: Independent Python/SciPy Cross-Verification
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +135,14 @@ jobs:
   wasm-build-and-pages:
     name: Build WASM SIMD & Prepare Interactive Lab
     runs-on: ubuntu-latest
-    needs: [ rust-tests, python-independent-verification ]
+    needs: [ detect-changes, rust-tests, python-independent-verification ]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.pages == 'true' &&
+      (needs.rust-tests.result == 'success' || needs.rust-tests.result == 'skipped') &&
+      (needs.python-independent-verification.result == 'success' || needs.python-independent-verification.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -78,7 +173,7 @@ jobs:
             console.log('WASM runtime smoke test OK (total_norm=' + n + ')');
           "
       - name: Assemble GitHub Pages site
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           mkdir -p _site/pkg
           cp index.html _site/
@@ -86,14 +181,17 @@ jobs:
           cp -r js _site/
           cp pkg/qca_spacetime_lab.js pkg/qca_spacetime_lab_bg.wasm _site/pkg/
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
   deploy-pages:
     name: Deploy Interactive Lab to GitHub Pages
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: |
+      needs.wasm-build-and-pages.result == 'success' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: wasm-build-and-pages
     runs-on: ubuntu-latest
     permissions:
