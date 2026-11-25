@@ -1,6 +1,6 @@
 [package]
 name = "qca_spacetime_lab"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "QCA Spacetime Lab: computational laboratory for 3+1D quantum cellular automata, discrete spacetime (causal sets), and 1+1D tensor-network lattice QFT in Rust + WebAssembly"
 repository = "https://github.com/JoMaCaCha/qca-spacetime-lab"
