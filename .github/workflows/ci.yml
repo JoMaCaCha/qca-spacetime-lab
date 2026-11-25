@@ -189,6 +189,8 @@ jobs:
   deploy-pages:
     name: Deploy Interactive Lab to GitHub Pages
     if: |
+      always() &&
+      !cancelled() &&
       needs.wasm-build-and-pages.result == 'success' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
