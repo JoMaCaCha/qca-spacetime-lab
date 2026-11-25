@@ -17,11 +17,14 @@
 use crate::fftn::FftN;
 use crate::rng::SplitMix64;
 use crate::sun::Algebra;
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
+
+const MAX_BOS_RECORD: usize = 100_000;
 
 pub struct Bosons {
     /// δ₀ de la última `set_higgs_oscillation` (para el φ(t) de Floquet).
@@ -145,6 +148,16 @@ impl QuantumSpacetimeUniverse {
 
     /// Antes de cada subpaso del Higgs: cos(θ/2) medio de los enlaces z y |Φ| medio.
     pub(crate) fn bos_record_substep(&mut self) {
+        if self.higgs.mode != 2
+            || self.dim != 3
+            || self.ym.n != 2
+            || self.ym.ng < 3
+            || self.higgs.phi.len() < 4 * self.n
+            || self.n == 0
+            || self.bos.rec_chalf.len() >= MAX_BOS_RECORD
+        {
+            return;
+        }
         let n = self.n;
         let mut ch = 0.0;
         for i in 0..n {
@@ -161,6 +174,13 @@ impl QuantumSpacetimeUniverse {
 
     /// Tras cada paso: amplitud del modo radial (|Φ| − media) con k = k_index·2π/N_x a lo largo de x.
     pub(crate) fn bos_record_step(&mut self) {
+        if self.higgs.mode != 2
+            || self.higgs.phi.len() < 4 * self.n
+            || self.n == 0
+            || self.bos.rec_amp.len() >= MAX_BOS_RECORD
+        {
+            return;
+        }
         let a = self.bos_radial_amplitude(self.bos.wc_k);
         self.bos.rec_amp.push(a);
     }
@@ -184,6 +204,9 @@ impl QuantumSpacetimeUniverse {
     fn bos_species_e(&self, l: usize, species: u32) -> f64 {
         let (g, gp) = (self.higgs.g, self.higgs.gp);
         let nrm = (g * g + gp * gp).sqrt();
+        if !g.is_finite() || !gp.is_finite() || g.abs() <= 1e-12 || nrm <= 1e-12 {
+            return 0.0;
+        }
         let e3 = self.ym.e[3 * l + 2];
         match species {
             0 => self.ym.e[3 * l] / g,
@@ -203,9 +226,11 @@ impl QuantumSpacetimeUniverse {
         if !self.bos_require_ew() {
             return;
         }
+        let d0 = clamp_finite(delta0 as f64, -10.0, 10.0, 0.0);
+        let hb = clamp_finite(hbar_eff as f64, 0.0, 10.0, 0.0);
         let v = self.higgs.v;
-        self.bos_reset_ew(v + delta0 as f64);
-        let sig = (0.5 * hbar_eff as f64).max(0.0).sqrt();
+        self.bos_reset_ew(v + d0);
+        let sig = (0.5 * hb).sqrt();
         let g = self.higgs.g;
         let mut rng = SplitMix64::new(seed ^ 0x5EED);
         for x in self.ym.e.iter_mut() {
@@ -215,13 +240,23 @@ impl QuantumSpacetimeUniverse {
             *x = sig * rng.gauss();
         }
         self.bos_transverse();
-        self.bos.delta0 = delta0 as f64;
+        self.bos.delta0 = d0;
         self.higgs_store_gauss_ref();
     }
 
     /// Energía eléctrica por capa k̂² = Σ_a 4·sen²(k_a/2) de W± (Ẽ¹, Ẽ²), Z y fotón (FFT de Ẽ y
     /// E_B): [número de capas, y por capa k̂², P_W, P_Z, P_γ].
     pub fn gauge_shell_power_ptr(&mut self) -> *const f64 {
+        if self.higgs.mode != 2
+            || self.ym.ng != 3
+            || self.ym.e.len() < 3 * self.dim * self.n
+            || self.em.e.len() < self.dim * self.n
+            || self.higgs.g.abs() <= 1e-12
+            || self.n == 0
+        {
+            self.bos.shell = vec![0.0];
+            return self.bos.shell.as_ptr();
+        }
         let (w, h, d, n, dim) = (self.w, self.h, self.d, self.n, self.dim);
         let mut fft = FftN::<f64>::new(w, h, d);
         let mut acc: BTreeMap<i64, [f64; 4]> = BTreeMap::new();
@@ -258,7 +293,13 @@ impl QuantumSpacetimeUniverse {
 
     /// Reparto de la energía: [total, Higgs (|Π|² + κ|DΦ|² + V), eléctrica de W±, de Z y de fotón].
     pub fn gauge_energy_split(&mut self) -> Vec<f64> {
-        if self.higgs.mode != 2 {
+        if self.higgs.mode != 2
+            || self.ym.ng != 3
+            || self.ym.e.len() < 3 * self.dim * self.n
+            || self.em.e.len() < self.dim * self.n
+            || self.higgs.phi.len() < 4 * self.n
+            || self.higgs.g.abs() <= 1e-12
+        {
             return vec![0.0; 5];
         }
         let total = self.higgs_compute_energy_density();
@@ -292,6 +333,14 @@ impl QuantumSpacetimeUniverse {
         let s = self.em.substeps.max(1) as usize;
         let dt = 1.0 / s as f64;
         let (kap, g, gp, v, lam) = (self.em.kappa, self.higgs.g, self.higgs.gp, self.higgs.v, self.higgs.lambda);
+        if !self.bos.delta0.is_finite()
+            || self.bos.delta0.abs() < 1e-12
+            || !khat2.is_finite()
+            || !lam.is_finite()
+            || lam <= 0.0
+        {
+            return 0.0;
+        }
         let m2 = |phi: f64| -> f64 {
             match species {
                 0 => kap * g * g * phi * phi / 2.0,
@@ -304,7 +353,9 @@ impl QuantumSpacetimeUniverse {
         let (mut phi, mut pi) = (phi0, 0.0f64);
         let mut maxima: Vec<f64> = Vec::new();
         let mut t = 0.0;
-        while maxima.len() < 12 && t < 1e5 {
+        let mut iters = 0usize;
+        while maxima.len() < 12 && t < 1e5 && iters < 500_000 {
+            iters += 1;
             let pold = pi;
             pi += dt * (-2.0 * lam * (phi * phi - v * v) * phi);
             phi += dt * pi;
@@ -325,7 +376,8 @@ impl QuantumSpacetimeUniverse {
                 best = (err, np);
             }
         }
-        let nsteps = (best.1 as f64 * period).round() as usize;
+        let max_nsteps = (500_000 / s).max(1);
+        let nsteps = ((best.1 as f64 * period).round() as usize).clamp(1, max_nsteps);
         // monodromía de (W, E): E ← E − dt·(κk̂² + M²(φ))·W, W ← W + dt·E, con φ en el mismo salto de rana
         let mut m = [[1.0f64, 0.0], [0.0, 1.0]];
         for col in 0..2 {
@@ -355,13 +407,20 @@ impl QuantumSpacetimeUniverse {
         if !self.bos_require_ew() {
             return;
         }
+        if self.dim < 2 || self.ym.ng != 3 || self.ym.e.len() < 3 * 2 * self.n || self.em.e.len() < 2 * self.n {
+            return;
+        }
+        let amp = clamp_finite(amplitude as f64, -1e6, 1e6, 0.0);
         let n = self.n;
         let (g, gp) = (self.higgs.g, self.higgs.gp);
         let nrm = (g * g + gp * gp).sqrt();
+        if nrm <= 1e-12 {
+            return;
+        }
         let k = 2.0 * PI * k_index as f64 / self.w as f64;
         for i in 0..n {
             let (x, _, _) = self.coords(i);
-            let f = amplitude as f64 * (k * x as f64).cos();
+            let f = amp * (k * x as f64).cos();
             let l = n + i;
             match species {
                 0 => self.ym.e[3 * l] += g * f,
@@ -382,6 +441,16 @@ impl QuantumSpacetimeUniverse {
     /// Amplitud de Fourier (k = k_index·2π/N_x a lo largo de x) del campo eléctrico físico de una
     /// especie en los enlaces y.
     pub fn gauge_mode_amplitude(&self, species: u32, k_index: u32) -> f64 {
+        if self.higgs.mode != 2
+            || self.dim < 2
+            || self.ym.ng != 3
+            || self.ym.e.len() < 3 * 2 * self.n
+            || self.em.e.len() < 2 * self.n
+            || self.n == 0
+            || self.w == 0
+        {
+            return 0.0;
+        }
         let n = self.n;
         let k = 2.0 * PI * k_index as f64 / self.w as f64;
         let (mut c, mut s) = (0.0, 0.0);
@@ -401,21 +470,27 @@ impl QuantumSpacetimeUniverse {
         if !self.bos_require_ew() {
             return;
         }
+        if self.dim != 3 {
+            self.set_message("El condensado de W requiere una malla 3D.");
+            return;
+        }
+        let th0 = clamp_finite(theta0 as f64, -100.0, 100.0, 0.0);
+        let sd = clamp_finite(seed as f64, -10.0, 10.0, 0.0);
         let v = self.higgs.v;
         self.bos_reset_ew(v);
         let n = self.n;
-        let u = Algebra::new(2).exp_minus_i(&[theta0 as f64, 0.0, 0.0]);
+        let u = Algebra::new(2).exp_minus_i(&[th0, 0.0, 0.0]);
         for i in 0..n {
             self.ym.set_link(2 * n + i, &u);
         }
         let k = 2.0 * PI * higgs_mode_k as f64 / self.w as f64;
         for i in 0..n {
             let (x, _, _) = self.coords(i);
-            self.higgs.phi[4 * i + 2] = v + seed as f64 * (k * x as f64).cos();
+            self.higgs.phi[4 * i + 2] = v + sd * (k * x as f64).cos();
         }
         self.higgs_store_gauss_ref();
         self.bos.wc_k = higgs_mode_k as usize;
-        self.bos.wc_seed = seed as f64;
+        self.bos.wc_seed = sd;
         self.bos.rec_chalf.clear();
         self.bos.rec_phi.clear();
         self.bos.rec_amp = vec![self.bos_radial_amplitude(higgs_mode_k as usize)];
@@ -498,7 +573,8 @@ impl QuantumSpacetimeUniverse {
             self.ym.set_link(2 * n + i, &alg.exp_minus_i(&th));
         }
         self.ym.e.iter_mut().for_each(|v| *v = 0.0);
-        self.bos_seed_links(seed_amplitude as f64, 0x6C00);
+        let amp = clamp_finite(seed_amplitude as f64, 0.0, 10.0, 0.0);
+        self.bos_seed_links(amp, 0x6C00);
         self.ym_store_gauss_ref();
         self.t = 0;
     }
@@ -507,6 +583,9 @@ impl QuantumSpacetimeUniverse {
     /// 1, 2, 4, 5, 6 y 7), en unidades de la red.
     pub fn charged_gluon_energy(&self) -> f64 {
         let ng = self.ym.ng;
+        if self.ncol < 2 || (ng != 3 && ng != 8) || self.ym.e.len() < self.dim * self.n * ng {
+            return 0.0;
+        }
         let charged: &[usize] = if ng == 3 { &[0, 1] } else { &[0, 1, 3, 4, 5, 6] };
         let mut e = 0.0;
         for l in 0..self.dim * self.n {
@@ -525,8 +604,14 @@ impl QuantumSpacetimeUniverse {
         if !self.bos_require_ew() {
             return;
         }
+        if self.dim < 2 || !self.higgs.gp.is_finite() || self.higgs.gp.abs() <= 1e-12 {
+            self.set_message("El campo EM uniforme requiere dim >= 2 y g' != 0.");
+            return;
+        }
+        let amp = clamp_finite(seed_amplitude as f64, 0.0, 10.0, 0.0);
         let v = self.higgs.v;
         self.bos_reset_ew(v);
+        self.ensure_em_buffers();
         self.em.compact = true;
         let (ax, ay, _) = self.bos_uniform_angles(flux_quanta);
         let n = self.n;
@@ -538,12 +623,20 @@ impl QuantumSpacetimeUniverse {
             self.em.a[i] = -ax[i] / gp;
             self.em.a[n + i] = -ay[i] / gp;
         }
-        self.bos_seed_links(seed_amplitude as f64, 0xA0B);
+        self.bos_seed_links(amp, 0xA0B);
         self.higgs_store_gauss_ref();
     }
 
     /// Energía eléctrica de los W cargados, ½Σ(Ẽ¹² + Ẽ²²)/g².
     pub fn charged_w_energy(&self) -> f64 {
+        if self.higgs.mode != 2
+            || self.ym.ng != 3
+            || self.ym.e.len() < 3 * self.dim * self.n
+            || !self.higgs.g.is_finite()
+            || self.higgs.g.abs() <= 1e-12
+        {
+            return 0.0;
+        }
         let g2 = self.higgs.g * self.higgs.g;
         let mut e = 0.0;
         for l in 0..self.dim * self.n {
@@ -554,6 +647,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Máximo de |Φ₁|, la componente cargada del Higgs (el condensado de Ambjørn–Olesen).
     pub fn charged_higgs_max(&self) -> f64 {
+        if self.higgs.mode != 2 || self.higgs.phi.len() < 4 * self.n {
+            return 0.0;
+        }
         (0..self.n).map(|i| self.higgs.phi[4 * i].hypot(self.higgs.phi[4 * i + 1])).fold(0.0, f64::max)
     }
 

@@ -11,6 +11,8 @@
 //!    estados puros gaussianos, régimen de TWA), el crecimiento de $\mathcal{N}_W > 0$ con no
 //!    gaussianidad y la supresión exponencial de la coherencia por decoherencia térmica.
 
+use crate::linalg::jacobi_symmetric;
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -36,83 +38,18 @@ impl OpenQuantum {
     }
 }
 
-/// Diagonalización de Jacobi de una matriz real simétrica n × n (fila mayor).
-/// Devuelve `(autovalores, autovectores_por_columna)` ordenados de menor a mayor energía.
-fn jacobi_symmetric(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
-    let mut v = vec![0.0f64; n * n];
-    for i in 0..n {
-        v[i * n + i] = 1.0;
-    }
-    let max_sweeps = 60;
-    for _ in 0..max_sweeps {
-        let mut off = 0.0f64;
-        for p in 0..n {
-            for q in (p + 1)..n {
-                off = off.max(a[p * n + q].abs());
-            }
-        }
-        if off < 1e-14 {
-            break;
-        }
-        for p in 0..n {
-            for q in (p + 1)..n {
-                let apq = a[p * n + q];
-                if apq.abs() < 1e-16 {
-                    continue;
-                }
-                let app = a[p * n + p];
-                let aqq = a[q * n + q];
-                let tau = (aqq - app) / (2.0 * apq);
-                let t = if tau >= 0.0 {
-                    1.0 / (tau + (1.0 + tau * tau).sqrt())
-                } else {
-                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
-                };
-                let c = 1.0 / (1.0 + t * t).sqrt();
-                let s = t * c;
-                a[p * n + p] = app - t * apq;
-                a[q * n + q] = aqq + t * apq;
-                a[p * n + q] = 0.0;
-                a[q * n + p] = 0.0;
-                for r in 0..n {
-                    if r != p && r != q {
-                        let arp = a[r * n + p];
-                        let arq = a[r * n + q];
-                        a[r * n + p] = c * arp - s * arq;
-                        a[p * n + r] = a[r * n + p];
-                        a[r * n + q] = s * arp + c * arq;
-                        a[q * n + r] = a[r * n + q];
-                    }
-                }
-                for r in 0..n {
-                    let vrp = v[r * n + p];
-                    let vrq = v[r * n + q];
-                    v[r * n + p] = c * vrp - s * vrq;
-                    v[r * n + q] = s * vrp + c * vrq;
-                }
-            }
-        }
-    }
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| a[i * n + i].partial_cmp(&a[j * n + j]).unwrap_or(std::cmp::Ordering::Equal));
-    let vals: Vec<f64> = order.iter().map(|&i| a[i * n + i]).collect();
-    let vecs: Vec<Vec<f64>> = order
-        .iter()
-        .map(|&col| (0..n).map(|row| v[row * n + col]).collect())
-        .collect();
-    (vals, vecs)
-}
-
-/// Producto de matrices cuadradas complejas m × m (fila mayor).
-fn mat_mul(a: &[C], b: &[C], m: usize) -> Vec<C> {
-    let mut out = vec![cx(0.0, 0.0); m * m];
+/// Producto de matrices cuadradas complejas m × m (fila mayor) escribiendo en `out`.
+fn mat_mul_into(a: &[C], b: &[C], m: usize, out: &mut [C]) {
+    let n2 = m * m;
+    assert!(a.len() >= n2 && b.len() >= n2 && out.len() >= n2);
+    out[..n2].fill(cx(0.0, 0.0));
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     unsafe {
         use core::arch::wasm32::*;
         for i in 0..m {
             let out_row = out.as_mut_ptr().add(i * m);
             for k in 0..m {
-                let aik = a[i * m + k];
+                let aik = *a.get_unchecked(i * m + k);
                 if aik.re == 0.0 && aik.im == 0.0 {
                     continue;
                 }
@@ -129,7 +66,7 @@ fn mat_mul(a: &[C], b: &[C], m: usize) -> Vec<C> {
                 }
             }
         }
-        return out;
+        return;
     }
     #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
     {
@@ -144,8 +81,14 @@ fn mat_mul(a: &[C], b: &[C], m: usize) -> Vec<C> {
                 }
             }
         }
-        out
     }
+}
+
+/// Producto de matrices cuadradas complejas m × m (fila mayor).
+fn mat_mul(a: &[C], b: &[C], m: usize) -> Vec<C> {
+    let mut out = vec![cx(0.0, 0.0); m * m];
+    mat_mul_into(a, b, m, &mut out);
+    out
 }
 
 /// Adjunta A† de una matriz compleja m × m.
@@ -159,17 +102,47 @@ fn mat_dag(a: &[C], m: usize) -> Vec<C> {
     out
 }
 
+/// Buffers temporales reutilizables para evitar asignaciones de heap en cada subpaso RK4.
+struct LindbladScratch {
+    t1: Vec<C>,
+    t2: Vec<C>,
+}
+
+impl LindbladScratch {
+    fn new(m: usize) -> Self {
+        Self {
+            t1: vec![cx(0.0, 0.0); m * m],
+            t2: vec![cx(0.0, 0.0); m * m],
+        }
+    }
+}
+
 /// Aplica el disipador de Lindblad γ · (L ρ L† − ½ L†L ρ − ½ ρ L†L) y lo suma a `drho`.
-fn add_lindblad_term(rho: &[C], l: &[C], ldag: &[C], ldag_l: &[C], rate: f64, m: usize, drho: &mut [C]) {
-    if rate <= 0.0 {
+#[allow(clippy::too_many_arguments)]
+fn add_lindblad_term(
+    rho: &[C],
+    l: &[C],
+    ldag: &[C],
+    ldag_l: &[C],
+    rate: f64,
+    m: usize,
+    drho: &mut [C],
+    sc: &mut LindbladScratch,
+) {
+    if !rate.is_finite() || rate <= 0.0 {
         return;
     }
-    let l_rho = mat_mul(l, rho, m);
-    let jump = mat_mul(&l_rho, ldag, m);
-    let left = mat_mul(ldag_l, rho, m);
-    let right = mat_mul(rho, ldag_l, m);
-    for k in 0..(m * m) {
-        drho[k] += (jump[k] - (left[k] + right[k]) * 0.5) * rate;
+    let n2 = m * m;
+    mat_mul_into(l, rho, m, &mut sc.t1);
+    mat_mul_into(&sc.t1, ldag, m, &mut sc.t2);
+    for k in 0..n2 {
+        drho[k] += sc.t2[k] * rate;
+    }
+    mat_mul_into(ldag_l, rho, m, &mut sc.t1);
+    mat_mul_into(rho, ldag_l, m, &mut sc.t2);
+    let half_rate = 0.5 * rate;
+    for k in 0..n2 {
+        drho[k] -= (sc.t1[k] + sc.t2[k]) * half_rate;
     }
 }
 
@@ -248,7 +221,7 @@ pub fn run_false_vacuum_lockdown(lambda: f64, v: f64, eps: f64, hbar: f64, gamma
             h_full[(i + 1) * n_grid + i] = -kin;
         }
     }
-    let (evals, evecs) = jacobi_symmetric(h_full, n_grid);
+    let (evals, evecs) = jacobi_symmetric(&h_full, n_grid);
     let m = m_trunc.min(n_grid);
 
     // Estado inicial: estado fundamental del pozo falso aislado (φ <= φ_B)
@@ -261,7 +234,7 @@ pub fn run_false_vacuum_lockdown(lambda: f64, v: f64, eps: f64, hbar: f64, gamma
             h_left[(i + 1) * n_left + i] = -kin;
         }
     }
-    let (_, left_vecs) = jacobi_symmetric(h_left, n_left);
+    let (_, left_vecs) = jacobi_symmetric(&h_left, n_left);
     let psi0_grid = &left_vecs[0];
 
     // Proyección sobre los M primeros autoestados globales
@@ -330,11 +303,11 @@ pub fn run_false_vacuum_lockdown(lambda: f64, v: f64, eps: f64, hbar: f64, gamma
         })
         .collect();
 
-    let diss = |r: &[C]| -> Vec<C> {
-        let mut dr = vec![cx(0.0, 0.0); m * m];
-        add_lindblad_term(r, &l_mat, &ldag, &ldag_l, rate_eff, m, &mut dr);
-        dr
-    };
+    let mut sc = LindbladScratch::new(m);
+    let mut k1 = vec![cx(0.0, 0.0); m * m];
+    let mut k2 = vec![cx(0.0, 0.0); m * m];
+    let mut k3 = vec![cx(0.0, 0.0); m * m];
+    let mut k4 = vec![cx(0.0, 0.0); m * m];
 
     let measure = |r: &[C]| -> (f64, f64, f64) {
         let mut pt = 0.0;
@@ -365,19 +338,23 @@ pub fn run_false_vacuum_lockdown(lambda: f64, v: f64, eps: f64, hbar: f64, gamma
             rho[k] *= half_phase[k];
         }
         if rate_eff > 0.0 {
-            let k1 = diss(&rho);
+            k1.fill(cx(0.0, 0.0));
+            add_lindblad_term(&rho, &l_mat, &ldag, &ldag_l, rate_eff, m, &mut k1, &mut sc);
             for k in 0..(m * m) {
                 tmp[k] = rho[k] + k1[k] * (0.5 * dt);
             }
-            let k2 = diss(&tmp);
+            k2.fill(cx(0.0, 0.0));
+            add_lindblad_term(&tmp, &l_mat, &ldag, &ldag_l, rate_eff, m, &mut k2, &mut sc);
             for k in 0..(m * m) {
                 tmp[k] = rho[k] + k2[k] * (0.5 * dt);
             }
-            let k3 = diss(&tmp);
+            k3.fill(cx(0.0, 0.0));
+            add_lindblad_term(&tmp, &l_mat, &ldag, &ldag_l, rate_eff, m, &mut k3, &mut sc);
             for k in 0..(m * m) {
                 tmp[k] = rho[k] + k3[k] * dt;
             }
-            let k4 = diss(&tmp);
+            k4.fill(cx(0.0, 0.0));
+            add_lindblad_term(&tmp, &l_mat, &ldag, &ldag_l, rate_eff, m, &mut k4, &mut sc);
             for k in 0..(m * m) {
                 rho[k] += (k1[k] + k2[k] * 2.0 + k3[k] * 2.0 + k4[k]) * (dt / 6.0);
             }
@@ -419,6 +396,7 @@ pub fn run_false_vacuum_lockdown(lambda: f64, v: f64, eps: f64, hbar: f64, gamma
 /// Evalúa la función de Wigner exacta W(q, p) de una matriz densidad ρ en base de Fock (n × n)
 /// mediante la recurrencia escalada sin desbordamiento de polinomios de Laguerre asociados.
 fn eval_wigner_grid(rho: &[C], n_fock: usize, grid_n: usize, lim: f64) -> (Vec<f64>, f64, f64, f64) {
+    let grid_n = grid_n.max(2);
     let mut log_fact = vec![0.0f64; n_fock + 1];
     for k in 1..=n_fock {
         log_fact[k] = log_fact[k - 1] + (k as f64).ln();
@@ -603,35 +581,38 @@ pub fn run_wigner_open_oscillator(
     };
     let dt = if n_steps > 0 { t_max / n_steps as f64 } else { 0.0 };
 
-    let rhs = |r: &[C]| -> Vec<C> {
-        let hr = mat_mul(&h_op, r, nf);
-        let rh = mat_mul(r, &h_op, nf);
-        let mut dr = vec![cx(0.0, 0.0); nf * nf];
+    let mut sc = LindbladScratch::new(nf);
+    let mut k1 = vec![cx(0.0, 0.0); nf * nf];
+    let mut k2 = vec![cx(0.0, 0.0); nf * nf];
+    let mut k3 = vec![cx(0.0, 0.0); nf * nf];
+    let mut k4 = vec![cx(0.0, 0.0); nf * nf];
+    let mut rhs_into = |r: &[C], dr: &mut [C]| {
+        mat_mul_into(&h_op, r, nf, &mut sc.t1);
+        mat_mul_into(r, &h_op, nf, &mut sc.t2);
         for k in 0..(nf * nf) {
-            let comm = hr[k] - rh[k];
+            let comm = sc.t1[k] - sc.t2[k];
             dr[k] = cx(comm.im, -comm.re);
         }
-        add_lindblad_term(r, &q_op, &q_op, &q2, gamma_phi, nf, &mut dr);
-        add_lindblad_term(r, &a_op, &adag_op, &n_op, gamma_th * (n_th + 1.0), nf, &mut dr);
-        add_lindblad_term(r, &adag_op, &a_op, &a_adag, gamma_th * n_th, nf, &mut dr);
-        dr
+        add_lindblad_term(r, &q_op, &q_op, &q2, gamma_phi, nf, dr, &mut sc);
+        add_lindblad_term(r, &a_op, &adag_op, &n_op, gamma_th * (n_th + 1.0), nf, dr, &mut sc);
+        add_lindblad_term(r, &adag_op, &a_op, &a_adag, gamma_th * n_th, nf, dr, &mut sc);
     };
 
     let mut tmp = vec![cx(0.0, 0.0); nf * nf];
     for _ in 0..n_steps {
-        let k1 = rhs(&rho);
+        rhs_into(&rho, &mut k1);
         for k in 0..(nf * nf) {
             tmp[k] = rho[k] + k1[k] * (0.5 * dt);
         }
-        let k2 = rhs(&tmp);
+        rhs_into(&tmp, &mut k2);
         for k in 0..(nf * nf) {
             tmp[k] = rho[k] + k2[k] * (0.5 * dt);
         }
-        let k3 = rhs(&tmp);
+        rhs_into(&tmp, &mut k3);
         for k in 0..(nf * nf) {
             tmp[k] = rho[k] + k3[k] * dt;
         }
-        let k4 = rhs(&tmp);
+        rhs_into(&tmp, &mut k4);
         for k in 0..(nf * nf) {
             rho[k] += (k1[k] + k2[k] * 2.0 + k3[k] * 2.0 + k4[k]) * (dt / 6.0);
         }
@@ -669,6 +650,14 @@ pub fn run_wigner_open_oscillator(
     (summary, grid)
 }
 
+impl QuantumSpacetimeUniverse {
+    /// Acceso seguro en Rust nativo al último vector de salida de los módulos de investigación
+    /// (evita `std::slice::from_raw_parts` en `qsu_cli` y pruebas nativas).
+    pub fn open_quantum_out_slice(&self) -> &[f64] {
+        &self.oq.out
+    }
+}
+
 #[wasm_bindgen]
 impl QuantumSpacetimeUniverse {
     /// Fase 14 (Christie et al., JCAP 2026): túnel de falso vacío en pozo doble asimétrico
@@ -679,12 +668,12 @@ impl QuantumSpacetimeUniverse {
     /// e_init, v_barrier, classical_crosses, e_final, n_pts, t0, p0, pur0, …].
     #[allow(clippy::too_many_arguments)]
     pub fn false_vacuum_lockdown(&mut self, lambda: f32, v: f32, eps: f32, hbar: f32, gamma_dec: f32, monitor_kind: u32, t_max: f32, steps: u32) -> *const f64 {
-        let lam = (lambda as f64).clamp(0.05, 5.0);
-        let vv = (v as f64).clamp(0.5, 3.0);
-        let ee = (eps as f64).clamp(-1.0, 1.0);
-        let hb = (hbar as f64).clamp(0.1, 2.0);
-        let gd = (gamma_dec as f64).clamp(0.0, 50.0);
-        let tm = (t_max as f64).clamp(0.5, 100.0);
+        let lam = clamp_finite(lambda as f64, 0.05, 5.0, 0.5);
+        let vv = clamp_finite(v as f64, 0.5, 3.0, 1.0);
+        let ee = clamp_finite(eps as f64, -1.0, 1.0, 0.0);
+        let hb = clamp_finite(hbar as f64, 0.1, 2.0, 0.5);
+        let gd = clamp_finite(gamma_dec as f64, 0.0, 50.0, 0.0);
+        let tm = clamp_finite(t_max as f64, 0.5, 100.0, 10.0);
         let st = (steps as usize).clamp(50, 8000);
         self.oq.out = run_false_vacuum_lockdown(lam, vv, ee, hb, gd, monitor_kind, tm, st);
         self.oq.out.as_ptr()
@@ -718,18 +707,18 @@ impl QuantumSpacetimeUniverse {
         lim: f32,
     ) -> *const f64 {
         let gn = (grid_n as usize).clamp(16, 96);
-        let lm = (lim as f64).clamp(2.0, 8.0);
+        let lm = clamp_finite(lim as f64, 2.0, 8.0, 4.0);
         let (summary, grid) = run_wigner_open_oscillator(
-            omega as f64,
-            xi as f64,
-            g3 as f64,
-            g4 as f64,
-            (gamma_phi as f64).max(0.0),
-            (gamma_th as f64).max(0.0),
-            (n_th as f64).max(0.0),
+            clamp_finite(omega as f64, 0.0, 20.0, 1.0),
+            clamp_finite(xi as f64, -5.0, 5.0, 0.0),
+            clamp_finite(g3 as f64, -2.0, 2.0, 0.0),
+            clamp_finite(g4 as f64, -2.0, 2.0, 0.0),
+            clamp_finite(gamma_phi as f64, 0.0, 20.0, 0.0),
+            clamp_finite(gamma_th as f64, 0.0, 20.0, 0.0),
+            clamp_finite(n_th as f64, 0.0, 20.0, 0.0),
             init_kind,
-            alpha0 as f64,
-            (t_max as f64).clamp(0.0, 40.0),
+            clamp_finite(alpha0 as f64, -4.0, 4.0, 0.0),
+            clamp_finite(t_max as f64, 0.0, 40.0, 1.0),
             (steps as usize).clamp(1, 4000),
             gn,
             lm,

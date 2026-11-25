@@ -10,6 +10,7 @@
 
 use crate::analog::{coin_matrix, shift_phases};
 use crate::linalg::{self, C};
+use crate::util::{clamp_finite, fibonacci_sphere, wrap_angle};
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
@@ -47,6 +48,9 @@ fn t_axis(a: usize, k: f64) -> M2 {
 fn su2_omega(f: &M2) -> f64 {
     let det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
     let ph = det.sqrt();
+    if ph.norm_sqr() < 1e-30 {
+        return 0.0;
+    }
     let g = [[f[0][0] / ph, f[0][1] / ph], [f[1][0] / ph, f[1][1] / ph]];
     let a0 = 0.5 * (g[0][0] + g[1][1]).re;
     // a_x = (i/2)·tr(σ_x F), a_y = (i/2)·tr(σ_y F), a_z = (i/2)·tr(σ_z F)
@@ -132,17 +136,6 @@ fn speed(walk: u32, k: [f64; 3]) -> f64 {
     (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt()
 }
 
-fn fibonacci(n: usize) -> Vec<[f64; 3]> {
-    (0..n)
-        .map(|i| {
-            let t = i as f64 + 0.5;
-            let phi = (1.0 - 2.0 * t / n as f64).acos();
-            let th = PI * (1.0 + 5f64.sqrt()) * t;
-            [th.cos() * phi.sin(), th.sin() * phi.sin(), phi.cos()]
-        })
-        .collect()
-}
-
 /// [n, A_n mín, A_n máx, A_n rms, ω(k) − ω(−k), Δx/ℓ_P con el rms, Δx/ℓ_P en la peor dirección].
 pub(crate) fn lorentz_coefficients(walk: u32, ndirs: usize) -> Vec<f64> {
     let ks = [0.01, 0.02, 0.03, 0.04];
@@ -156,7 +149,7 @@ pub(crate) fn lorentz_coefficients(walk: u32, ndirs: usize) -> Vec<f64> {
             }
         }
     }
-    let dirs = fibonacci(ndirs);
+    let dirs = fibonacci_sphere(ndirs);
     let (mut a1, mut a2) = (Vec::with_capacity(ndirs), Vec::with_capacity(ndirs));
     for d in &dirs {
         let mut h = [0.0f64; 3];
@@ -174,7 +167,7 @@ pub(crate) fn lorentz_coefficients(walk: u32, ndirs: usize) -> Vec<f64> {
     let stats = |a: &[f64]| -> (f64, f64, f64) {
         let mn = a.iter().cloned().fold(f64::INFINITY, f64::min);
         let mx = a.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let rms = (a.iter().map(|v| v * v).sum::<f64>() / a.len() as f64).sqrt();
+        let rms = (a.iter().map(|v| v * v).sum::<f64>() / a.len().max(1) as f64).sqrt();
         (mn, mx, rms)
     };
     let kt = [0.21, 0.13, 0.07];
@@ -185,10 +178,12 @@ pub(crate) fn lorentz_coefficients(walk: u32, ndirs: usize) -> Vec<f64> {
     if linear {
         let worst = s1.0.abs().max(s1.1.abs());
         let b = birefringence_bound(&dirs, &a1, 800);
-        vec![1.0, s1.0, s1.1, s1.2, asym, E_PLANCK / (s1.2 * E_QG1), E_PLANCK / (worst * E_QG1), b[0], b[1], b[2]]
+        let dx_rms = if s1.2 > 1e-30 { E_PLANCK / (s1.2 * E_QG1) } else { f64::INFINITY };
+        let dx_worst = if worst > 1e-30 { E_PLANCK / (worst * E_QG1) } else { f64::INFINITY };
+        vec![1.0, s1.0, s1.1, s1.2, asym, dx_rms, dx_worst, b[0], b[1], b[2]]
     } else {
         let worst = s2.0.abs().max(s2.1.abs());
-        let bound = |a: f64| E_PLANCK / (E_QG2 * (a / 1.5).sqrt());
+        let bound = |a: f64| if a > 1e-30 { E_PLANCK / (E_QG2 * (a / 1.5).sqrt()) } else { f64::INFINITY };
         vec![2.0, s2.0, s2.1, s2.2, asym, bound(s2.2), bound(worst), f64::NAN, f64::NAN, 0.0]
     }
 }
@@ -299,7 +294,10 @@ fn birefringence_bound(dirs: &[[f64; 3]], a1: &[f64], norients: usize) -> [f64; 
         }
         bounds.push(best * E_PLANCK);
     }
-    bounds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    bounds.sort_by(f64::total_cmp);
+    if bounds.is_empty() {
+        return [f64::INFINITY, f64::INFINITY, norm2.sqrt()];
+    }
     [bounds[bounds.len() / 2], bounds[bounds.len() - 1], norm2.sqrt()]
 }
 
@@ -360,17 +358,23 @@ pub(crate) fn photon_rotation(k: [f64; 3], steps: usize) -> [f64; 4] {
         let cr = [kh[1] * u[2] - kh[2] * u[1], kh[2] * u[0] - kh[0] * u[2], kh[0] * u[1] - kh[1] * u[0]];
         let num: C = (0..3).map(|i| u[i].conj() * C::new(0.0, 1.0) * cr[i]).sum();
         let den: f64 = u.iter().map(|c| c.norm_sqr()).sum();
-        num.re / den
+        if den > 1e-30 { num.re / den } else { 0.0 }
     };
     let proj = |u: &[C], v: &[C]| -> Vec<C> {
         let num: C = u.iter().zip(v).map(|(a, b)| a.conj() * b).sum();
         let den: f64 = u.iter().map(|c| c.norm_sqr()).sum();
+        if den <= 1e-30 {
+            return vec![C::new(0.0, 0.0); u.len()];
+        }
         u.iter().map(|a| *a * (num / den)).collect()
     };
     // polarización inicial: E(x) = e1·cos(k·x), B = 0
     let zz = if kh[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
     let mut e1 = [kh[1] * zz[2] - kh[2] * zz[1], kh[2] * zz[0] - kh[0] * zz[2], kh[0] * zz[1] - kh[1] * zz[0]];
     let n1 = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+    if n1 <= 1e-30 || !n1.is_finite() {
+        return [0.0, 0.5 * (wk - wm), helicity(&up), helicity(&um)];
+    }
     e1 = e1.map(|v| v / n1);
     let e2 = [kh[1] * e1[2] - kh[2] * e1[1], kh[2] * e1[0] - kh[0] * e1[2], kh[0] * e1[1] - kh[1] * e1[0]];
     let mut fk = e1.map(|v| C::new(0.5 * v, 0.0));
@@ -387,13 +391,8 @@ pub(crate) fn photon_rotation(k: [f64; 3], steps: usize) -> [f64; 4] {
             let b: C = (0..3).map(|i| fpos[i] * e2[i]).sum();
             let (s1, s2) = (a.norm_sqr() - b.norm_sqr(), 2.0 * (a.conj() * b).re);
             // ángulo doble del eje mayor, desenrollado
-            let mut th2 = s2.atan2(s1);
-            while th2 - prev > PI {
-                th2 -= 2.0 * PI;
-            }
-            while th2 - prev < -PI {
-                th2 += 2.0 * PI;
-            }
+            let raw_th2 = s2.atan2(s1);
+            let th2 = prev + wrap_angle(raw_th2 - prev);
             prev = th2;
             ts.push(t as f64);
             angs.push(0.5 * th2);
@@ -440,13 +439,8 @@ pub(crate) fn grover_speed(dim: u32, m: f64, k_over_m: f64, n: [f64; 3]) -> f64 
         }
         v = e.vectors[best].clone();
         // ω continuo (sin saltos de 2π)
-        let mut om = -e.values[best].arg();
-        while om - om_prev > PI {
-            om -= 2.0 * PI;
-        }
-        while om - om_prev < -PI {
-            om += 2.0 * PI;
-        }
+        let raw_om = -e.values[best].arg();
+        let om = om_prev + wrap_angle(raw_om - om_prev);
         om_prev = om;
         omegas.push(om);
     }
@@ -470,13 +464,27 @@ impl QuantumSpacetimeUniverse {
     /// lineal: [rotación de la polarización medida (rad/paso), (ω(k) − ω(−k))/2, helicidad del modo ω(k),
     /// helicidad del modo ω(−k)].
     pub fn photon_polarization_rotation(&mut self, kx: f32, ky: f32, kz: f32, steps: u32) -> *const f64 {
-        self.an.out = photon_rotation([kx as f64, ky as f64, kz as f64], steps.clamp(100, 100_000) as usize).to_vec();
+        let k = [
+            clamp_finite(kx as f64, -PI, PI, 0.1),
+            clamp_finite(ky as f64, -PI, PI, 0.1),
+            clamp_finite(kz as f64, -PI, PI, 0.1),
+        ];
+        self.an.out = photon_rotation(k, steps.clamp(100, 100_000) as usize).to_vec();
         self.an.out.as_ptr()
     }
 
     /// §2.30: velocidad radial de la banda simétrica de la caminata de Grover con |k| = k_over_m·m en la
     /// dirección (nx, ny, nz). Con k ≫ m tiende a ‖n̂‖∞.
     pub fn grover_relativistic_speed(&self, dim: u32, m: f32, k_over_m: f32, nx: f32, ny: f32, nz: f32) -> f64 {
-        grover_speed(dim, (m as f64).clamp(1e-6, 1.5), (k_over_m as f64).clamp(0.01, 1e4), [nx as f64, ny as f64, nz as f64])
+        grover_speed(
+            dim,
+            clamp_finite(m as f64, 1e-6, 1.5, 0.1),
+            clamp_finite(k_over_m as f64, 0.01, 1e4, 1.0),
+            [
+                clamp_finite(nx as f64, -1e6, 1e6, 1.0),
+                clamp_finite(ny as f64, -1e6, 1e6, 0.0),
+                clamp_finite(nz as f64, -1e6, 1e6, 0.0),
+            ],
+        )
     }
 }

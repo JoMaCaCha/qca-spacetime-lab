@@ -17,13 +17,23 @@ use wasm_bindgen::prelude::*;
 
 /// r(x*) de la coordenada tortuga: x*/2M − 1 = u + ln u con u = r/2M − 1 (Newton).
 pub fn tortoise_r(xs: f64, m: f64) -> f64 {
+    if !(xs.is_finite() && m.is_finite()) || m <= 0.0 {
+        return 0.0;
+    }
     let cc = xs / (2.0 * m) - 1.0;
-    let mut u = if cc > 1.0 { cc - cc.ln() } else { cc.exp() };
+    if cc < -700.0 {
+        return 2.0 * m;
+    }
+    let mut u = if cc > 1.0 { cc - cc.ln() } else { cc.exp().max(1e-300) };
     for _ in 0..100 {
+        if !u.is_finite() || u <= 1e-300 {
+            u = 1e-300;
+            break;
+        }
         let f = u + u.ln() - cc;
         let d = 1.0 + 1.0 / u;
         let nu = u - f / d;
-        u = if nu <= 0.0 { 0.5 * u } else { nu };
+        u = if !nu.is_finite() || nu <= 0.0 { (0.5 * u).max(1e-300) } else { nu };
         if f.abs() < 1e-14 * cc.abs().max(1.0) {
             break;
         }
@@ -33,7 +43,14 @@ pub fn tortoise_r(xs: f64, m: f64) -> f64 {
 
 /// Ω = √(1 − 2M/r(x*)).
 pub fn schwarzschild_omega(xs: f64, m: f64) -> f64 {
-    (1.0 - 2.0 * m / tortoise_r(xs, m)).max(0.0).sqrt()
+    if !(xs.is_finite() && m.is_finite()) || m <= 0.0 {
+        return 0.0;
+    }
+    let r = tortoise_r(xs, m);
+    if r <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - 2.0 * m / r).max(0.0).sqrt()
 }
 
 impl QuantumSpacetimeUniverse {
@@ -59,6 +76,7 @@ impl QuantumSpacetimeUniverse {
     /// gaussiano en (x, y) de anchura `width`, 3 = Schwarzschild radial en coordenada tortuga
     /// (amplitude = M, x = celda con x* = 0). La masa de Dirac pasa a ser m₀·Ω, con m₀ la masa actual.
     pub fn set_conformal_potential(&mut self, kind: u32, amplitude: f32, x: f32, y: f32, width: f32) {
+        self.message.clear();
         if self.scenario != 2 || self.dim != 2 || self.sw.active {
             self.set_message("El potencial conforme necesita el escenario Dirac 2D (§2.15).");
             return;
@@ -67,7 +85,7 @@ impl QuantumSpacetimeUniverse {
             return;
         }
         self.conf_kind = kind.min(3);
-        self.conf_amp = if kind == 3 { (amplitude as f64).max(0.5) } else { (amplitude as f64).clamp(-0.5, 0.5) };
+        self.conf_amp = if self.conf_kind == 3 { (amplitude as f64).max(0.5) } else { (amplitude as f64).clamp(-0.5, 0.5) };
         self.conf_pos = [x as f64, y as f64];
         self.conf_width = (width as f64).max(0.5);
         if self.conf_kind == 0 {
@@ -91,6 +109,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Ω en una celda (1 sin potencial conforme).
     pub fn conformal_omega_at(&self, x: f32, y: f32) -> f64 {
+        if !(x.is_finite() && y.is_finite()) {
+            return 1.0;
+        }
         self.conformal_omega(x as f64, y as f64)
     }
 
@@ -102,6 +123,9 @@ impl QuantumSpacetimeUniverse {
     /// x*(r) = r + 2M·ln(r/2M − 1).
     pub fn tortoise_coordinate(&self, r: f32, m: f32) -> f64 {
         let (r, m) = (r as f64, m as f64);
+        if !(r.is_finite() && m.is_finite()) || m <= 0.0 || r <= 2.0 * m {
+            return f64::NAN;
+        }
         r + 2.0 * m * (r / (2.0 * m) - 1.0).ln()
     }
 
@@ -109,8 +133,15 @@ impl QuantumSpacetimeUniverse {
     /// de la ecuación v̇ = −Ω·Ω′/Ω₀² (equivale a d(x*)/dt = −√(1 − Ω²/Ω₀²)), con RK4 de 8 subpasos.
     pub fn schwarzschild_geodesic(&self, x_star0: f32, m: f32, steps: u32) -> Vec<f64> {
         let m = m as f64;
+        if !(x_star0.is_finite() && m.is_finite()) || m <= 0.0 {
+            return Vec::new();
+        }
+        let steps = steps.min(200_000);
         let om = |x: f64| schwarzschild_omega(x, m);
         let o0 = om(x_star0 as f64);
+        if !o0.is_finite() || o0 <= 1e-15 {
+            return vec![x_star0 as f64; steps as usize + 1];
+        }
         let acc = |x: f64| {
             let h = 1e-3;
             let (a, b) = (om(x + h), om(x - h));
@@ -141,9 +172,17 @@ impl QuantumSpacetimeUniverse {
         if self.scenario != 2 || self.dim != 2 || self.sw.active {
             return;
         }
+        if !(x.is_finite() && sigma.is_finite() && ky.is_finite()) || sigma <= 0.0 {
+            return;
+        }
         let (x0, s, ky) = (x as f64, (sigma as f64).max(0.5), ky as f64);
         let sp = su2_band(&dirac2d_matrix(self.mass as f64, 0.0, ky), if band < 0 { -1 } else { 1 }).1;
         let n = self.w * self.h;
+        let nco = self.ncol.max(1);
+        let stride = self.stride();
+        if self.buffer_read.len() < n * stride {
+            return;
+        }
         let mut norm = 0.0;
         let mut vals = vec![c(0.0, 0.0); n];
         for i in 0..n {
@@ -152,12 +191,16 @@ impl QuantumSpacetimeUniverse {
             vals[i] = crate::dirac2d::C64::from_polar(e, ky * (i / self.w) as f64);
             norm += e * e;
         }
+        if norm <= 0.0 {
+            return;
+        }
         let a = 1.0 / norm.sqrt();
         for i in 0..n {
             for comp in 0..2 {
                 let v = vals[i] * sp[comp] * a;
-                self.buffer_read[4 * i + 2 * comp] += v.re as f32;
-                self.buffer_read[4 * i + 2 * comp + 1] += v.im as f32;
+                let o = i * stride + 2 * (comp * nco);
+                self.buffer_read[o] += v.re as f32;
+                self.buffer_read[o + 1] += v.im as f32;
             }
         }
     }

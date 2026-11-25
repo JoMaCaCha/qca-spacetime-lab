@@ -118,7 +118,7 @@ impl QuantumSpacetimeUniverse {
             }
             let im = self.nb(i, b, -1);
             let (b0, b1) = (self.higgs_bt(i, a, b), self.higgs_bt(im, a, b));
-            f += if self.em.compact { ((q * b0).sin() - (q * b1).sin()) / q } else { b0 - b1 };
+            f += if self.em.compact && q.abs() > 1e-15 { ((q * b0).sin() - (q * b1).sin()) / q } else { b0 - b1 };
         }
         self.em.kappa * f
     }
@@ -174,7 +174,7 @@ impl QuantumSpacetimeUniverse {
             self.bos_record_step();
         }
         if self.higgs.mode >= 2 {
-            self.ym.reunit_counter += 1;
+            self.ym.reunit_counter = self.ym.reunit_counter.wrapping_add(1);
             if self.ym.reunit_counter % 100 == 0 {
                 for l in 0..self.dim * self.n {
                     let mut u = self.ym.link(l);
@@ -632,7 +632,7 @@ impl QuantumSpacetimeUniverse {
         let q = self.higgs_q();
         let kap = self.em.kappa;
         let nf = self.higgs.nf;
-        let inv_g2 = if self.higgs.mode >= 2 { 1.0 / (self.higgs.g * self.higgs.g) } else { 0.0 };
+        let inv_g2 = if self.higgs.mode >= 2 && self.higgs.g.abs() > 1e-15 { 1.0 / (self.higgs.g * self.higgs.g) } else { 0.0 };
         let mut dens = std::mem::take(&mut self.higgs.energy_density);
         dens.resize(n, 0.0);
         let mut total = 0.0;
@@ -658,7 +658,7 @@ impl QuantumSpacetimeUniverse {
                     e += 0.5 * self.em.e[a * n + i].powi(2);
                     for b in (a + 1)..dim {
                         let bb = self.higgs_bt(i, a, b);
-                        e += if self.em.compact { kap * (1.0 - (q * bb).cos()) / (q * q) } else { 0.5 * kap * bb * bb };
+                        e += if self.em.compact && q.abs() > 1e-15 { kap * (1.0 - (q * bb).cos()) / (q * q) } else { 0.5 * kap * bb * bb };
                     }
                 }
             }
@@ -709,16 +709,21 @@ impl QuantumSpacetimeUniverse {
     /// Φ = (0, v)), π = 0 y los campos a cero; la materia queda en pausa. Usa q, κ = c² y s del
     /// modo electromagnetismo (y g, g′ de `set_electroweak_couplings` en el doblete).
     pub fn set_higgs(&mut self, mode: u32, v: f32, lambda: f32) {
+        self.message.clear();
         if mode == 3 {
             self.set_message("El Higgs adjunto se activa con set_adjoint_higgs (§2.12, 3D).");
+            return;
+        }
+        if mode == 0 && self.sm.active {
+            self.set_message("No se puede desactivar el Higgs mientras el modelo estándar esté activo.");
             return;
         }
         if mode != 0 && self.scenario != 0 {
             self.set_message("El campo de Higgs se usa en el escenario materia (la materia queda en pausa).");
             return;
         }
-        self.higgs.v = (v as f64).max(0.0);
-        self.higgs.lambda = (lambda as f64).max(0.0);
+        self.higgs.v = crate::util::clamp_finite(v as f64, 0.0, 1e3, 1.0);
+        self.higgs.lambda = crate::util::clamp_finite(lambda as f64, 0.0, 1e3, 0.0);
         match mode {
             0 => {
                 self.higgs.mode = 0;
@@ -739,6 +744,8 @@ impl QuantumSpacetimeUniverse {
             _ => {
                 if self.ncol != 2 {
                     self.resize_colour(2);
+                } else {
+                    self.ym = crate::yangmills::YmField::new(2, self.dim, self.n);
                 }
                 self.higgs.mode = 2;
                 self.higgs_alloc(4);
@@ -750,6 +757,7 @@ impl QuantumSpacetimeUniverse {
             }
         }
         self.clear();
+        self.ensure_em_buffers();
         self.em.mode = 2;
         for v in self.em.a.iter_mut() {
             *v = 0.0;
@@ -773,8 +781,11 @@ impl QuantumSpacetimeUniverse {
 
     /// Doblete: SU(2) con g y U(1)_Y con g′ (la carga U(1) del Higgs es g′/2).
     pub fn set_electroweak_couplings(&mut self, g: f32, g_prime: f32) {
-        self.higgs.g = g as f64;
-        self.higgs.gp = g_prime as f64;
+        if !(g.is_finite() && g_prime.is_finite()) {
+            return;
+        }
+        self.higgs.g = g.clamp(-10.0, 10.0) as f64;
+        self.higgs.gp = g_prime.clamp(-10.0, 10.0) as f64;
         if self.higgs.mode == 2 {
             self.em.q = 0.5 * self.higgs.gp;
             self.higgs_store_gauss_ref();
@@ -803,14 +814,16 @@ impl QuantumSpacetimeUniverse {
     /// 3D: dos monopolos magnéticos externos de carga ±2π/q unidos por una cuerda de Dirac fija a
     /// lo largo de z, en la columna (x, y), entre z y z + length. El Higgs no la ve (flujo 2π/q).
     pub fn add_monopole_pair(&mut self, x: i32, y: i32, z: i32, length: u32) {
+        self.message.clear();
         if self.dim != 3 || self.higgs.mode != 1 {
             self.set_message("Los monopolos externos son del Higgs abeliano en 3D.");
             return;
         }
         let q = if self.higgs_q() != 0.0 { self.higgs_q() } else { 1.0 };
         let flux = 2.0 * PI / q;
-        for k in 0..length as i32 {
-            let i = self.wrap_cell(x, y, z + k);
+        let len = length.min((self.d as u32).saturating_mul(4).max(1)).min(4096) as i32;
+        for k in 0..len {
+            let i = self.wrap_cell(x, y, z.wrapping_add(k));
             self.higgs.string_b[i] += flux;
         }
         self.higgs.has_string = true;
@@ -851,12 +864,17 @@ impl QuantumSpacetimeUniverse {
                 }
             }
         }
-        count
+        let _ = count;
+        (self.higgs.vortices.len() / 3) as u32
     }
 
     /// n × 3 floats: [x, y, devanado] del último `higgs_vortex_count`.
     pub fn higgs_vortices_ptr(&self) -> *const f32 {
         self.higgs.vortices.as_ptr()
+    }
+
+    pub fn higgs_vortices_len(&self) -> u32 {
+        self.higgs.vortices.len() as u32
     }
 
     /// Σ|π|² + c²Σ|Dφ|² + λΣ(|φ|² − v²)² + la energía de los campos gauge (SU(2) con 1/g²).
@@ -891,6 +909,10 @@ impl QuantumSpacetimeUniverse {
 
     pub fn higgs_energy_density_ptr(&self) -> *const f32 {
         self.higgs.energy_density.as_ptr()
+    }
+
+    pub fn higgs_energy_density_len(&self) -> u32 {
+        self.higgs.energy_density.len() as u32
     }
 
     /// Residuo de Gauss del Higgs: [SU(2) o abeliano, U(1) del doblete].
@@ -940,11 +962,14 @@ impl QuantumSpacetimeUniverse {
                 let (g, gp) = (self.higgs.g, self.higgs.gp);
                 let mw = (c2 * g * g * v * v / 2.0).sqrt();
                 let mz = (c2 * (g * g + gp * gp) * v * v / 2.0).sqrt();
-                vec![mw, mz, g / (g * g + gp * gp).sqrt(), (4.0 * lam * v * v).sqrt()]
+                let gn = (g * g + gp * gp).sqrt();
+                let cw = if gn > 1e-15 { g / gn } else { 1.0 };
+                vec![mw, mz, cw, (4.0 * lam * v * v).sqrt()]
             }
             3 => {
                 let g = self.higgs.g;
-                vec![c2.sqrt() * g * v, (2.0 * lam).sqrt() * v, 4.0 * PI * self.em.kappa * v / g, 0.0]
+                let mono = if g.abs() > 1e-15 { 4.0 * PI * self.em.kappa * v / g } else { f64::INFINITY };
+                vec![c2.sqrt() * g * v, (2.0 * lam).sqrt() * v, mono, 0.0]
             }
             _ => vec![0.0; 4],
         }
@@ -989,6 +1014,10 @@ impl QuantumSpacetimeUniverse {
     /// Abeliano: 0 = fotón (A_y), 1 = Higgs (|φ|), 2 = fase de φ.
     /// Doblete: 0 = W¹ (U_y), 1 = W³ (U_y), 2 = B (A_y), 3 = Higgs (Φ₂).
     pub fn seed_higgs_wave(&mut self, kind: u32, k_index: u32, amp: f32) {
+        if self.higgs.mode == 0 || self.dim < 2 {
+            return;
+        }
+        self.ensure_em_buffers();
         let n = self.n;
         let k = 2.0 * PI * k_index as f64 / self.w as f64;
         let amp = amp as f64;
@@ -1116,7 +1145,7 @@ impl QuantumSpacetimeUniverse {
                 }
             }
         }
-        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = Vec::new();
         let mut k = 0;
         while k < pts.len() {
@@ -1208,6 +1237,7 @@ impl QuantumSpacetimeUniverse {
     /// §2.12 (3D): SU(2) con un Higgs en la adjunta, acoplamiento g, v y λ. Pone φ = v·ẑ, π = 0,
     /// U = 1 y Ẽ = 0; la materia queda en pausa. Usa κ = c² y s del modo electromagnetismo.
     pub fn set_adjoint_higgs(&mut self, g: f32, v: f32, lambda: f32) {
+        self.message.clear();
         if self.dim != 3 {
             self.set_message("El Higgs adjunto y el monopolo de 't Hooft–Polyakov son 3D.");
             return;
@@ -1218,16 +1248,19 @@ impl QuantumSpacetimeUniverse {
         }
         if self.ncol != 2 {
             self.resize_colour(2);
+        } else {
+            self.ym = crate::yangmills::YmField::new(2, self.dim, self.n);
         }
-        self.higgs.g = g as f64;
-        self.higgs.v = v as f64;
-        self.higgs.lambda = (lambda as f64).max(0.0);
+        self.higgs.g = crate::util::clamp_finite(g as f64, -10.0, 10.0, 0.5);
+        self.higgs.v = crate::util::clamp_finite(v as f64, 0.0, 1e3, 1.0);
+        self.higgs.lambda = crate::util::clamp_finite(lambda as f64, 0.0, 1e3, 0.0);
         self.higgs.mode = 3;
         self.higgs_alloc(3);
         for i in 0..self.n {
             self.higgs.phi[3 * i + 2] = self.higgs.v;
         }
         self.clear();
+        self.ensure_em_buffers();
         self.em.mode = 2;
         self.higgs_store_gauss_ref();
     }
@@ -1287,7 +1320,7 @@ impl QuantumSpacetimeUniverse {
                         for j in 0..3 {
                             s += levi(cc, a, j) * rh[j];
                         }
-                        th[cc] = -g * s * (1.0 - k) / (g * r);
+                        th[cc] = -s * (1.0 - k) / r;
                     }
                 }
                 let u = self.ym.alg.exp_minus_i(&th);
@@ -1403,12 +1436,12 @@ impl QuantumSpacetimeUniverse {
     /// unidades de 4π/g (proyección abeliana de 't Hooft: el ángulo de cada plaqueta alrededor de
     /// φ̂ en su esquina). En el Higgs abeliano, el flujo de B (con cuerdas) en unidades de 2π/q.
     pub fn monopole_flux(&self, x: f32, y: f32, z: f32, half: u32) -> f64 {
-        if self.dim != 3 {
+        if self.dim != 3 || !(x.is_finite() && y.is_finite() && z.is_finite()) {
             return 0.0;
         }
-        let h = half as i32;
+        let h = half.min(128) as i32;
         let (x0, y0, z0) = (x.round() as i32 - h, y.round() as i32 - h, z.round() as i32 - h);
-        let (x1, y1, z1) = (x0 + 2 * h, y0 + 2 * h, z0 + 2 * h);
+        let (x1, y1, z1) = (x0.wrapping_add(2 * h), y0.wrapping_add(2 * h), z0.wrapping_add(2 * h));
         let mut total = 0.0;
         // caras normales a cada eje: plano (a, b) con la normal c = a × b
         let faces: [(usize, usize); 3] = [(1, 2), (2, 0), (0, 1)];
@@ -1474,6 +1507,9 @@ impl QuantumSpacetimeUniverse {
         let c2 = self.higgs_c2();
         let kap = self.em.kappa;
         let g2 = self.higgs.g * self.higgs.g;
+        if g2 <= 1e-30 {
+            return 0.0;
+        }
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let (mut gr, mut mg) = (0.0, 0.0);
         for i in 0..n {
@@ -1521,8 +1557,16 @@ impl QuantumSpacetimeUniverse {
         self.higgs.phi.as_ptr()
     }
 
+    pub fn higgs_phi_len(&self) -> u32 {
+        self.higgs.phi.len() as u32
+    }
+
     pub fn higgs_pi_ptr(&self) -> *const f64 {
         self.higgs.pi.as_ptr()
+    }
+
+    pub fn higgs_pi_len(&self) -> u32 {
+        self.higgs.pi.len() as u32
     }
 
     pub fn higgs_components(&self) -> u32 {

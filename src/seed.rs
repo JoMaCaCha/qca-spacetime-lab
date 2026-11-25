@@ -57,11 +57,17 @@ impl QuantumSpacetimeUniverse {
     /// Envolvente gaussiana normalizada: devuelve la lista implícita de celdas a menos de 3σ
     /// y su peso, llamando a `f(celda, desplazamiento, envolvente)`.
     pub(crate) fn for_gaussian_cells<F: FnMut(usize, [f64; 3], f64)>(&self, cx: f64, cy: f64, cz: f64, sigma: f64, mut f: F) {
-        let rc = (3.0 * sigma).ceil().max(1.0) as i32;
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && sigma.is_finite()) || sigma <= 0.0 {
+            return;
+        }
         let (w, h, d) = (self.w as f64, self.h as f64, self.d as f64);
-        let x0 = cx.round() as i32;
-        let y0 = cy.round() as i32;
-        let z0 = if self.dim == 3 { cz.round() as i32 } else { 0 };
+        let cx_w = cx.rem_euclid(w);
+        let cy_w = cy.rem_euclid(h);
+        let cz_w = if self.dim == 3 { cz.rem_euclid(d) } else { 0.0 };
+        let rc = (3.0 * sigma).ceil().clamp(1.0, self.w.max(self.h).max(self.d) as f64) as i32;
+        let x0 = cx_w.round() as i32;
+        let y0 = cy_w.round() as i32;
+        let z0 = if self.dim == 3 { cz_w.round() as i32 } else { 0 };
         let zr = if self.dim == 3 { rc } else { 0 };
         let rc2 = (3.0 * sigma) * (3.0 * sigma);
         // evita visitar dos veces la misma celda si 3σ supera media malla
@@ -74,9 +80,9 @@ impl QuantumSpacetimeUniverse {
                     let xi = x0 + dx;
                     let yi = y0 + dy;
                     let zi = z0 + dz;
-                    let ddx = min_image(xi as f64 - cx, w);
-                    let ddy = min_image(yi as f64 - cy, h);
-                    let ddz = if self.dim == 3 { min_image(zi as f64 - cz, d) } else { 0.0 };
+                    let ddx = min_image(xi as f64 - cx_w, w);
+                    let ddy = min_image(yi as f64 - cy_w, h);
+                    let ddz = if self.dim == 3 { min_image(zi as f64 - cz_w, d) } else { 0.0 };
                     let r2 = ddx * ddx + ddy * ddy + ddz * ddz;
                     if r2 > rc2 {
                         continue;
@@ -130,7 +136,7 @@ impl QuantumSpacetimeUniverse {
 
     /// q·A(r₀) promediado en los enlaces de la celda (2D o 3D).
     pub(crate) fn matter_gauge_phase(&self, cx: f64, cy: f64, cz: f64) -> [f64; 3] {
-        if self.em.mode == 0 {
+        if self.em.mode == 0 || self.em.a.len() < self.dim * self.n {
             return [0.0; 3];
         }
         let c = self.wrap_cell(cx.round() as i32, cy.round() as i32, cz.round() as i32);
@@ -278,7 +284,7 @@ impl QuantumSpacetimeUniverse {
     /// Variante con centro real (para el laboratorio): igual que `inject_wavepacket`.
     #[allow(clippy::too_many_arguments)]
     pub fn inject_wavepacket_at(&mut self, x: f32, y: f32, z: f32, sigma: f32, amount: f32, kx: f32, ky: f32, kz: f32, phase: f32) {
-        if sigma <= 0.0 || amount <= 0.0 || !sigma.is_finite() || !amount.is_finite() {
+        if ![x, y, z, sigma, amount, kx, ky, kz, phase].iter().all(|v| v.is_finite()) || sigma <= 0.0 || amount <= 0.0 {
             return;
         }
         let kz = if self.dim == 3 { kz as f64 } else { 0.0 };
@@ -294,11 +300,14 @@ impl QuantumSpacetimeUniverse {
         }
         let v = v.clamp(-std::f32::consts::PI, std::f32::consts::PI);
         self.has_potential = true;
-        let dd = if self.dim == 3 { d.max(1) } else { 1 };
+        let dd = if self.dim == 3 { d.max(1).min(self.d as u32) } else { 1 };
+        let x0 = wrap_i(x, self.w) as i32;
+        let y0 = wrap_i(y, self.h) as i32;
+        let z0 = if self.dim == 3 { wrap_i(z, self.d) as i32 } else { 0 };
         for dz in 0..dd as i32 {
             for dy in 0..h.min(self.h as u32) as i32 {
                 for dx in 0..w.min(self.w as u32) as i32 {
-                    let c = self.wrap_cell(x + dx, y + dy, z + dz);
+                    let c = self.wrap_cell(x0 + dx, y0 + dy, z0 + dz);
                     self.potential[c] = v;
                 }
             }
@@ -308,15 +317,34 @@ impl QuantumSpacetimeUniverse {
     /// Muro duro: reflexión perfecta en esas celdas; pone a cero la amplitud que haya dentro.
     #[allow(clippy::too_many_arguments)]
     pub fn add_wall(&mut self, x: i32, y: i32, z: i32, w: u32, h: u32, d: u32) {
-        let dd = if self.dim == 3 { d.max(1) } else { 1 };
-        let stride = 2 * self.nc_max;
+        let dd = if self.dim == 3 { d.max(1).min(self.d as u32) } else { 1 };
+        let stride = self.stride();
+        let sw_active = self.sw.active;
+        let sw_st = if sw_active { 2 * self.sw_namp() } else { 0 };
+        let x0 = wrap_i(x, self.w) as i32;
+        let y0 = wrap_i(y, self.h) as i32;
+        let z0 = if self.dim == 3 { wrap_i(z, self.d) as i32 } else { 0 };
         for dz in 0..dd as i32 {
             for dy in 0..h.min(self.h as u32) as i32 {
                 for dx in 0..w.min(self.w as u32) as i32 {
-                    let c = self.wrap_cell(x + dx, y + dy, z + dz);
+                    let c = self.wrap_cell(x0 + dx, y0 + dy, z0 + dz);
                     self.wall[c] = 1;
                     for k in 0..stride {
                         self.buffer_read[c * stride + k] = 0.0;
+                    }
+                    if sw_active {
+                        if (c + 1) * sw_st <= self.sw.psi.len() {
+                            for k in 0..sw_st {
+                                self.sw.psi[c * sw_st + k] = 0.0;
+                            }
+                        }
+                        for p in self.sw.parts.iter_mut() {
+                            if (c + 1) * sw_st <= p.len() {
+                                for k in 0..sw_st {
+                                    p[c * sw_st + k] = 0.0;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -361,13 +389,17 @@ impl QuantumSpacetimeUniverse {
 
     /// Multiplica todo el campo por e^{i(k·r)} (empujón brusco a un estado ya relajado).
     pub fn boost_field(&mut self, kx: f32, ky: f32, kz: f32) {
+        if !(kx.is_finite() && ky.is_finite() && kz.is_finite()) {
+            return;
+        }
         let stride = self.stride();
+        let namp = self.namp();
         for i in 0..self.n {
             let (x, y, z) = self.coords(i);
             let th = kx as f64 * x as f64 + ky as f64 * y as f64 + kz as f64 * z as f64;
             let (c, s) = (th.cos() as f32, th.sin() as f32);
             let b = i * stride;
-            for k in 0..self.nc {
+            for k in 0..namp {
                 let re = self.buffer_read[b + 2 * k];
                 let im = self.buffer_read[b + 2 * k + 1];
                 self.buffer_read[b + 2 * k] = re * c - im * s;
@@ -379,11 +411,14 @@ impl QuantumSpacetimeUniverse {
     /// Desplaza todo el campo (dx, dy, dz) celdas en el toro (equivale a mover el resto de la escena).
     pub fn translate_field(&mut self, dx: i32, dy: i32, dz: i32) {
         let stride = self.stride();
+        let dx_w = wrap_i(dx, self.w) as i32;
+        let dy_w = wrap_i(dy, self.h) as i32;
+        let dz_w = if self.dim == 3 { wrap_i(dz, self.d) as i32 } else { 0 };
         let src = std::mem::take(&mut self.buffer_read);
         let mut dst = std::mem::take(&mut self.buffer_write);
         for i in 0..self.n {
             let (x, y, z) = self.coords(i);
-            let j = self.wrap_cell(x as i32 + dx, y as i32 + dy, z as i32 + dz);
+            let j = self.wrap_cell(x as i32 + dx_w, y as i32 + dy_w, z as i32 + dz_w);
             dst[j * stride..(j + 1) * stride].copy_from_slice(&src[i * stride..(i + 1) * stride]);
         }
         self.buffer_read = dst;
@@ -393,6 +428,10 @@ impl QuantumSpacetimeUniverse {
     /// Pone a cero la amplitud fuera de |r − r₀| < radius (recorta un solitón relajado y deja
     /// fuera la radiación que emitió al formarse).
     pub fn mask_outside(&mut self, x: f32, y: f32, z: f32, radius: f32) {
+        if !(x.is_finite() && y.is_finite() && z.is_finite() && radius.is_finite()) {
+            return;
+        }
+        let r2 = if radius < 0.0 { -1.0 } else { (radius as f64) * (radius as f64) };
         let stride = self.stride();
         let (w, h, d) = (self.w as f64, self.h as f64, self.d as f64);
         for i in 0..self.n {
@@ -400,7 +439,7 @@ impl QuantumSpacetimeUniverse {
             let dx = min_image(cx as f64 - x as f64, w);
             let dy = min_image(cy as f64 - y as f64, h);
             let dz = if self.dim == 3 { min_image(cz as f64 - z as f64, d) } else { 0.0 };
-            if dx * dx + dy * dy + dz * dz > (radius as f64) * (radius as f64) {
+            if dx * dx + dy * dy + dz * dz > r2 {
                 for k in 0..stride {
                     self.buffer_read[i * stride + k] = 0.0;
                 }
@@ -410,7 +449,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Copia el campo de otro universo con la misma malla y los mismos canales.
     pub fn copy_field_from(&mut self, other: &QuantumSpacetimeUniverse) {
-        if other.n == self.n && other.nc == self.nc {
+        if (other.w, other.h, other.d, other.nc, other.ncol) == (self.w, self.h, self.d, self.nc, self.ncol)
+            && other.buffer_read.len() == self.buffer_read.len()
+        {
             self.buffer_read.copy_from_slice(&other.buffer_read);
             self.t = other.t;
             self.theta_ref = other.theta_ref;
@@ -419,15 +460,22 @@ impl QuantumSpacetimeUniverse {
 
     /// Suma el campo de otro universo con la misma malla (superposición de escenas preparadas).
     pub fn add_field_from(&mut self, other: &QuantumSpacetimeUniverse, dx: i32, dy: i32, dz: i32, phase: f32) {
-        if other.n != self.n || other.nc != self.nc {
+        if !phase.is_finite()
+            || (other.w, other.h, other.d, other.nc, other.ncol) != (self.w, self.h, self.d, self.nc, self.ncol)
+            || other.buffer_read.len() != self.buffer_read.len()
+        {
             return;
         }
         let stride = self.stride();
+        let namp = self.namp();
+        let dx_w = wrap_i(dx, self.w) as i32;
+        let dy_w = wrap_i(dy, self.h) as i32;
+        let dz_w = if self.dim == 3 { wrap_i(dz, self.d) as i32 } else { 0 };
         let (c, s) = (phase.cos(), phase.sin());
         for i in 0..self.n {
             let (x, y, z) = self.coords(i);
-            let j = self.wrap_cell(x as i32 + dx, y as i32 + dy, z as i32 + dz);
-            for k in 0..self.nc {
+            let j = self.wrap_cell(x as i32 + dx_w, y as i32 + dy_w, z as i32 + dz_w);
+            for k in 0..namp {
                 let re = other.buffer_read[i * stride + 2 * k];
                 let im = other.buffer_read[i * stride + 2 * k + 1];
                 self.buffer_read[j * stride + 2 * k] += re * c - im * s;
@@ -449,6 +497,10 @@ impl QuantumSpacetimeUniverse {
     /// con fases aleatorias, en el espinor simétrico y normalizado a ⟨E⟩ = `mean_density`.
     /// Con k₀ = m\*·v es la distribución de velocidades de §3.4. Reemplaza el campo y pone t = 0.
     pub fn seed_gaussian_gas(&mut self, k0: f32, mean_density: f32, seed: u32) {
+        if !(k0.is_finite() && mean_density.is_finite()) {
+            return;
+        }
+        let mean_density = (mean_density as f64).max(0.0);
         let n = self.n;
         let mut rng = SplitMix64::new(seed as u64 ^ 0xB05E_57A2);
         let k0 = (k0 as f64).max(1e-6);
@@ -464,14 +516,14 @@ impl QuantumSpacetimeUniverse {
         }
         self.fft.inverse(&mut buf);
         let s: f64 = buf.iter().take(n).map(|c| c.norm_sqr() as f64).sum();
-        let scale = if s > 0.0 { ((mean_density as f64 * n as f64) / s).sqrt() } else { 0.0 };
-        let nc = self.nc;
-        let stride = 2 * nc;
-        let inv = 1.0 / (nc as f64).sqrt();
+        let scale = if s > 0.0 { ((mean_density * n as f64) / s).sqrt() } else { 0.0 };
+        let namp = self.namp();
+        let stride = self.stride();
+        let inv = 1.0 / (namp.max(1) as f64).sqrt();
         for i in 0..n {
             let re = (buf[i].re as f64 * scale * inv) as f32;
             let im = (buf[i].im as f64 * scale * inv) as f32;
-            for k in 0..nc {
+            for k in 0..namp {
                 self.buffer_read[i * stride + 2 * k] = re;
                 self.buffer_read[i * stride + 2 * k + 1] = im;
             }
@@ -486,18 +538,21 @@ impl QuantumSpacetimeUniverse {
     /// S(x) = s_phase·δ₀·cos(kx) en el espinor simétrico (modo de densidad con la velocidad
     /// del modo creciente: s_phase = (m\* / k²)·(d ln δ/dt), §3.4).
     pub fn seed_density_mode(&mut self, rho: f32, delta0: f32, mode: u32, s_phase: f32) {
-        let nc = self.nc;
-        let stride = 2 * nc;
-        let inv = 1.0 / (nc as f64).sqrt();
+        if !(rho.is_finite() && delta0.is_finite() && s_phase.is_finite()) {
+            return;
+        }
+        let namp = self.namp();
+        let stride = self.stride();
+        let inv = 1.0 / (namp.max(1) as f64).sqrt();
         let k = 2.0 * std::f64::consts::PI * mode as f64 / self.w as f64;
         for i in 0..self.n {
             let x = (i % self.w) as f64;
             let c = (k * x).cos();
-            let r = (rho as f64 * (1.0 + delta0 as f64 * c)).max(0.0);
+            let r = ((rho as f64).max(0.0) * (1.0 + delta0 as f64 * c)).max(0.0);
             let s = s_phase as f64 * delta0 as f64 * c;
             let a = r.sqrt() * inv;
             let (re, im) = ((a * s.cos()) as f32, (a * s.sin()) as f32);
-            for ch in 0..nc {
+            for ch in 0..namp {
                 self.buffer_read[i * stride + 2 * ch] = re;
                 self.buffer_read[i * stride + 2 * ch + 1] = im;
             }

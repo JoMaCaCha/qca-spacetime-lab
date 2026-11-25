@@ -56,7 +56,7 @@ impl YmField {
             energy_density: vec![0.0; cells],
             elec_density: vec![0.0; cells],
             mag_density: vec![0.0; cells],
-            sol_colour: vec![0.0; crate::MAX_SOLITONS * 8],
+            sol_colour: Vec::new(),
             reunit_counter: 0,
         }
     }
@@ -161,11 +161,6 @@ fn quat_exp_minus_i(th: &[f64]) -> Quat {
 }
 
 impl QuantumSpacetimeUniverse {
-    #[inline(always)]
-    pub(crate) fn namp(&self) -> usize {
-        self.nc * self.ncol
-    }
-
     /// Vector de color del canal k en la celda i.
     #[inline(always)]
     pub(crate) fn colour_vec(&self, i: usize, k: usize) -> [C; 3] {
@@ -329,7 +324,7 @@ impl QuantumSpacetimeUniverse {
                 }
             }
         }
-        self.ym.reunit_counter += 1;
+        self.ym.reunit_counter = self.ym.reunit_counter.wrapping_add(1);
         if self.ym.reunit_counter % 100 == 0 {
             for l in 0..links {
                 let mut u = self.ym.link(l);
@@ -729,6 +724,18 @@ impl QuantumSpacetimeUniverse {
     /// Paquete con vector de color: φ·e_colour en todos los canales (Grover) o el espinor de la
     /// banda ⊗ color (Dirac).
     pub(crate) fn add_colour_packet(&mut self, cx: f64, cy: f64, cz_: f64, sigma: f64, amount: f64, k: [f64; 3], colour: [C; 3]) {
+        if !(cx.is_finite()
+            && cy.is_finite()
+            && cz_.is_finite()
+            && sigma.is_finite()
+            && amount.is_finite()
+            && k.iter().all(|v| v.is_finite())
+            && colour.iter().all(|c| c.re.is_finite() && c.im.is_finite()))
+            || sigma <= 0.0
+            || amount <= 0.0
+        {
+            return;
+        }
         let mut sum = 0.0f64;
         self.for_gaussian_cells(cx, cy, cz_, sigma, |_, _, e| sum += e * e);
         if sum <= 0.0 {
@@ -784,8 +791,17 @@ impl QuantumSpacetimeUniverse {
 
     /// Carga de color de cada solitón por unidad de norma (la rellena analyze_solitons).
     pub(crate) fn ym_soliton_colours(&mut self) {
+        if self.ncol <= 1 {
+            return;
+        }
         let ng = self.ym.ng;
         let count = self.sol.count;
+        if count == 0 || self.sol.labels.len() != self.n {
+            return;
+        }
+        if self.ym.sol_colour.len() < crate::MAX_SOLITONS * 8 {
+            self.ym.sol_colour.resize(crate::MAX_SOLITONS * 8, 0.0);
+        }
         for v in self.ym.sol_colour.iter_mut().take(count * 8) {
             *v = 0.0;
         }
@@ -793,7 +809,7 @@ impl QuantumSpacetimeUniverse {
         let mut acc = vec![0.0f64; count * ng];
         for i in 0..self.n {
             let l = self.sol.labels[i];
-            if l < 0 {
+            if l < 0 || (l as usize) >= count {
                 continue;
             }
             self.colour_density(i, &mut rho);
@@ -815,6 +831,7 @@ impl QuantumSpacetimeUniverse {
     /// §2.11: 1 = U(1), 2 = SU(2), 3 = SU(3). Solo en el escenario materia; reasigna búferes y
     /// limpia el campo. Con SU(N) el tope se desactiva (§2.5).
     pub fn set_gauge_group(&mut self, n: u32) {
+        self.message.clear();
         if self.scenario != 0 {
             self.set_message("El grupo gauge solo se elige en el escenario materia (en Dirac, con set_dirac_colour).");
             return;
@@ -836,6 +853,7 @@ impl QuantumSpacetimeUniverse {
 
     /// §2.14 (2D): 1 = sin color (U(1)), 2 = SU(2), 3 = SU(3) en el escenario Dirac.
     pub fn set_dirac_colour(&mut self, n: u32) {
+        self.message.clear();
         if self.scenario != 2 {
             self.set_message("set_dirac_colour solo actúa en el escenario Dirac.");
             return;
@@ -852,6 +870,9 @@ impl QuantumSpacetimeUniverse {
     /// 1 = verde, 2 = azul). Con U(1) ignora `colour`.
     #[allow(clippy::too_many_arguments)]
     pub fn inject_colour_wavepacket(&mut self, x: i32, y: i32, z: i32, radius: f32, amount: f32, kx: f32, ky: f32, kz: f32, colour: u32) {
+        if ![radius, amount, kx, ky, kz].iter().all(|v| v.is_finite()) || radius <= 0.0 || amount <= 0.0 {
+            return;
+        }
         if self.ncol <= 1 {
             self.inject_wavepacket(x, y, z, radius, amount, kx, ky, kz, 0.0);
             return;
@@ -865,12 +886,18 @@ impl QuantumSpacetimeUniverse {
     /// Paquete de color con un vector de color arbitrario (re/im de hasta 3 componentes).
     #[allow(clippy::too_many_arguments)]
     pub fn inject_colour_vector_packet(&mut self, x: f32, y: f32, z: f32, sigma: f32, amount: f32, kx: f32, ky: f32, c0r: f32, c0i: f32, c1r: f32, c1i: f32, c2r: f32, c2i: f32) {
+        if ![x, y, z, sigma, amount, kx, ky, c0r, c0i, c1r, c1i, c2r, c2i].iter().all(|v| v.is_finite()) || sigma <= 0.0 || amount <= 0.0 {
+            return;
+        }
         let col = [Complex::new(c0r as f64, c0i as f64), Complex::new(c1r as f64, c1i as f64), Complex::new(c2r as f64, c2i as f64)];
         self.add_colour_packet(x as f64, y as f64, z as f64, sigma as f64, amount as f64, [kx as f64, ky as f64, 0.0], col);
     }
 
     /// Paquete de quark de Dirac 2D (norma 1): espinor de la banda +1 en k ⊗ color de la base.
     pub fn inject_dirac_colour_packet(&mut self, x: f32, y: f32, sigma: f32, kx: f32, ky: f32, colour: u32) {
+        if ![x, y, sigma, kx, ky].iter().all(|v| v.is_finite()) || sigma <= 0.0 {
+            return;
+        }
         let col = basis_colour(self.ncol.max(1), colour as usize);
         self.add_dirac_colour_packet(x as f64, y as f64, sigma as f64, kx as f64, ky as f64, col);
     }
@@ -878,6 +905,9 @@ impl QuantumSpacetimeUniverse {
     /// Paquete de quark con un vector de color arbitrario (re/im de hasta 3 componentes).
     #[allow(clippy::too_many_arguments)]
     pub fn inject_dirac_colour_vector_packet(&mut self, x: f32, y: f32, sigma: f32, kx: f32, ky: f32, c0r: f32, c0i: f32, c1r: f32, c1i: f32, c2r: f32, c2i: f32) {
+        if ![x, y, sigma, kx, ky, c0r, c0i, c1r, c1i, c2r, c2i].iter().all(|v| v.is_finite()) || sigma <= 0.0 {
+            return;
+        }
         let col = [Complex::new(c0r as f64, c0i as f64), Complex::new(c1r as f64, c1i as f64), Complex::new(c2r as f64, c2i as f64)];
         self.add_dirac_colour_packet(x as f64, y as f64, sigma as f64, kx as f64, ky as f64, col);
     }
@@ -890,6 +920,9 @@ impl QuantumSpacetimeUniverse {
     /// Igual que `add_static_colour_charge`, con la anchura σ elegida.
     #[allow(clippy::too_many_arguments)]
     pub fn add_static_colour_charge_sigma(&mut self, x: i32, y: i32, z: i32, amount: f32, colour: u32, sigma: f32) {
+        if !(amount.is_finite() && sigma.is_finite()) {
+            return;
+        }
         if self.ncol <= 1 {
             self.add_static_charge(x, y, z, amount, sigma);
             return;
@@ -906,6 +939,9 @@ impl QuantumSpacetimeUniverse {
     /// Carga de color externa en una dirección arbitraria del álgebra (componentes sobre T^c).
     #[allow(clippy::too_many_arguments)]
     pub fn add_static_colour_vector(&mut self, x: i32, y: i32, z: i32, amount: f32, sigma: f32, dir: &[f64]) {
+        if self.ncol <= 1 || !(amount.is_finite() && sigma.is_finite()) || !dir.iter().all(|v| v.is_finite()) {
+            return;
+        }
         let n = self.n;
         let ng = self.ym.ng;
         let c0 = self.wrap_cell(x, y, z);
@@ -922,6 +958,9 @@ impl QuantumSpacetimeUniverse {
             prof[i] = (-(dx * dx + dy * dy + dz * dz) / (2.0 * sg * sg)).exp();
             tot += prof[i];
         }
+        if tot <= 0.0 {
+            return;
+        }
         let q2 = self.em.q * self.em.q;
         let mut src = vec![0.0f64; n * ng];
         for i in 0..n {
@@ -935,14 +974,19 @@ impl QuantumSpacetimeUniverse {
             self.ym_add_gradient(&src);
             self.ym_store_gauss_ref();
         }
-        self.em.markers.push(cx as f32 + 0.5);
-        self.em.markers.push(cy as f32 + 0.5);
-        self.em.markers.push(3.0);
+        if self.em.markers.len() + 3 <= 3 * 4096 {
+            self.em.markers.push(cx as f32 + 0.5);
+            self.em.markers.push(cy as f32 + 0.5);
+            self.em.markers.push(3.0);
+        }
     }
 
     /// Pulso de gluones: U_y(r) ← U_y(r)·exp(i·amplitude·g(x − x₀)·T^component), g gaussiana de
     /// anchura `width`. Polarizado en y, viaja en ±x.
     pub fn inject_gluon_pulse(&mut self, x0: i32, component: u32, amplitude: f32, width: f32) {
+        if !(amplitude.is_finite() && width.is_finite()) || width <= 0.0 {
+            return;
+        }
         if self.ncol <= 1 {
             self.add_photon_pulse(x0 as f32, width, amplitude, 1);
             return;
@@ -970,7 +1014,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Fija enlaces uniformes U_x = exp(−i·ax·T^gx) y U_y = exp(−i·by·T^gy) (precesión de Wong).
     pub fn set_uniform_colour_links(&mut self, ax: f32, gx: u32, by: f32, gy: u32) {
-        if self.ncol <= 1 {
+        if self.ncol <= 1 || !(ax.is_finite() && by.is_finite()) {
             return;
         }
         let n = self.n;
@@ -991,7 +1035,7 @@ impl QuantumSpacetimeUniverse {
     /// a medida en el laboratorio (por ejemplo, un campo T³ abeliano uniforme en el gauge de Landau).
     #[allow(clippy::too_many_arguments)]
     pub fn set_colour_link(&mut self, x: i32, y: i32, z: i32, axis: u32, generator: u32, theta: f32) {
-        if self.ncol <= 1 || axis as usize >= self.dim {
+        if self.ncol <= 1 || axis as usize >= self.dim || !theta.is_finite() {
             return;
         }
         let ng = self.ym.ng;
@@ -1005,6 +1049,9 @@ impl QuantumSpacetimeUniverse {
     /// Tubo de flujo de color en la plaqueta (x, y) con holonomía h = exp(iθ·T^generator), con la
     /// cuerda de Dirac hacia y+ llevando h† en los enlaces U_x que cruza (y su compensador).
     pub fn set_colour_flux_tube(&mut self, x: i32, y: i32, theta: f32, generator: u32) {
+        if !theta.is_finite() || self.h < 2 {
+            return;
+        }
         if self.ncol <= 1 {
             self.add_flux_tube(x, y, theta);
             return;
@@ -1022,24 +1069,26 @@ impl QuantumSpacetimeUniverse {
                 self.ym.set_link(i, &u);
             }
         }
-        self.em.markers.push(x0 as f32 + 0.5);
-        self.em.markers.push(y0 as f32 + 0.5);
-        self.em.markers.push(1.0);
+        if self.em.markers.len() + 3 <= 3 * 4096 {
+            self.em.markers.push(x0 as f32 + 0.5);
+            self.em.markers.push(y0 as f32 + 0.5);
+            self.em.markers.push(1.0);
+        }
     }
 
     /// Baño de gluones (§2.11): U = 1, Gauss de la materia y las cargas, y un Ẽ aleatorio
     /// transverso (div Ẽ = 0 con la divergencia hacia atrás) con ⟨Σ_c (Ẽ^c)²⟩ = amplitude² por
     /// enlace. Con U(1), un baño de fotones con A = 0.
     pub fn seed_gluon_bath(&mut self, amplitude: f32, seed: u32) {
+        if !amplitude.is_finite() {
+            return;
+        }
         let n = self.n;
         let dim = self.dim;
         let ng = if self.ncol > 1 { self.ym.ng } else { 1 };
         if self.ncol > 1 {
             self.ym_init_gauss();
         } else {
-            for v in self.em.a.iter_mut() {
-                *v = 0.0;
-            }
             self.em_init_gauss();
         }
         let mut rng = crate::rng::SplitMix64::new(seed as u64 ^ 0x6100_B47A);
@@ -1092,6 +1141,7 @@ impl QuantumSpacetimeUniverse {
             }
             self.ym_store_gauss_ref();
         } else {
+            self.ensure_em_buffers();
             for l in 0..dim * n {
                 self.em.e[l] += s * noise[l];
             }
@@ -1101,6 +1151,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Ẽ += ε·F(U)/max|F|: una perturbación que respeta la ley de Gauss exactamente (caos).
     pub fn perturb_gauge_field(&mut self, epsilon: f32) {
+        if !epsilon.is_finite() {
+            return;
+        }
         if self.ncol > 1 {
             self.ym_compute_force();
             let fmax = self.ym.force.iter().fold(0.0f64, |m, v| m.max(v.abs()));
@@ -1111,6 +1164,7 @@ impl QuantumSpacetimeUniverse {
                 }
             }
         } else {
+            self.ensure_em_buffers();
             let n = self.n;
             let mut f = vec![0.0f64; self.dim * n];
             for a in 0..self.dim {
@@ -1136,7 +1190,7 @@ impl QuantumSpacetimeUniverse {
     /// ⟨|Tr P − Tr P′|⟩/N sobre todas las plaquetas: distancia invariante gauge entre dos campos
     /// (Müller y Trayanov). Exige la misma malla y el mismo grupo. Con U(1), con e^{iB}.
     pub fn plaquette_distance(&self, other: &QuantumSpacetimeUniverse) -> f64 {
-        if other.n != self.n || other.ncol != self.ncol {
+        if (other.w, other.h, other.d, other.ncol) != (self.w, self.h, self.d, self.ncol) {
             return f64::NAN;
         }
         let mut s = 0.0;
@@ -1159,11 +1213,13 @@ impl QuantumSpacetimeUniverse {
 
     /// Copia el campo gauge (U(1) o SU(N)) y la materia de otro universo con la misma malla.
     pub fn copy_gauge_from(&mut self, other: &QuantumSpacetimeUniverse) {
-        if other.n != self.n || other.ncol != self.ncol {
+        if (other.w, other.h, other.d, other.ncol) != (self.w, self.h, self.d, self.ncol)
+            || other.buffer_read.len() != self.buffer_read.len()
+        {
             return;
         }
         self.copy_em_from(other);
-        if self.ncol > 1 {
+        if self.ncol > 1 && other.ym.u.len() == self.ym.u.len() {
             self.ym.u.copy_from_slice(&other.ym.u);
             self.ym.e.copy_from_slice(&other.ym.e);
             self.ym.rho_ext.copy_from_slice(&other.ym.rho_ext);
@@ -1177,8 +1233,16 @@ impl QuantumSpacetimeUniverse {
         self.ym.sol_colour.as_ptr()
     }
 
+    /// Número de f32 en `soliton_colour_ptr`.
+    pub fn soliton_colour_len(&self) -> u32 {
+        self.ym.sol_colour.len() as u32
+    }
+
     /// Energía eléctrica ½|Ẽ|² y magnética 2κ(N − Re Tr P) por celda (modo 4 y laboratorio).
     pub fn compute_colour_field_densities(&mut self) {
+        if self.ncol <= 1 {
+            return;
+        }
         let n = self.n;
         let ng = self.ym.ng;
         for i in 0..n {
@@ -1200,6 +1264,11 @@ impl QuantumSpacetimeUniverse {
 
     pub fn colour_electric_density_ptr(&self) -> *const f32 {
         self.ym.elec_density.as_ptr()
+    }
+
+    /// Número de f32 en `colour_electric_density_ptr`.
+    pub fn colour_electric_density_len(&self) -> u32 {
+        self.ym.elec_density.len() as u32
     }
 
     /// Ẽ^c_a en un enlace.
@@ -1267,14 +1336,20 @@ impl QuantumSpacetimeUniverse {
     /// Ω(r) = exp(i·amplitude·ξ^c·T^c): ψ → Ω·ψ, U_a → Ω(r+â)·U_a·Ω(r)†, Ẽ_a → Ad(Ω(r))·Ẽ_a y
     /// G_ref → Ad(Ω)·G_ref. Las densidades, |Ẽ|², Re Tr P y el residuo de Gauss no cambian.
     pub(crate) fn ym_random_gauge(&mut self, amplitude: f32, seed: u32) {
+        if !amplitude.is_finite() || self.ncol <= 1 {
+            return;
+        }
         let n = self.n;
         let ng = self.ym.ng;
         let nco = self.ncol;
         let mut rng = crate::rng::SplitMix64::new(seed as u64 ^ 0x5u64 << 40);
         let omegas: Vec<Mat> = (0..n)
             .map(|_| {
-                let th: Vec<f64> = (0..ng).map(|_| -(amplitude as f64) * rng.gauss()).collect();
-                self.ym.alg.exp_minus_i(&th)
+                let mut th = [0.0f64; 8];
+                for v in th.iter_mut().take(ng) {
+                    *v = -(amplitude as f64) * rng.gauss();
+                }
+                self.ym.alg.exp_minus_i(&th[..ng])
             })
             .collect();
         // materia (con el motor de espinores, su estado en f64 y sus partes)
@@ -1302,16 +1377,17 @@ impl QuantumSpacetimeUniverse {
             self.sw.psi = bufs.remove(0);
             self.sw.parts = bufs;
             self.sw_mirror();
-        }
-        let stride = self.stride();
-        for i in 0..n {
-            for k in 0..self.nc {
-                let v = self.colour_vec(i, k);
-                let r = omegas[i].apply(&v);
-                let b = i * stride + 2 * k * nco;
-                for a in 0..nco {
-                    self.buffer_read[b + 2 * a] = r[a].re as f32;
-                    self.buffer_read[b + 2 * a + 1] = r[a].im as f32;
+        } else {
+            let stride = self.stride();
+            for i in 0..n {
+                for k in 0..self.nc {
+                    let v = self.colour_vec(i, k);
+                    let r = omegas[i].apply(&v);
+                    let b = i * stride + 2 * k * nco;
+                    for a in 0..nco {
+                        self.buffer_read[b + 2 * a] = r[a].re as f32;
+                        self.buffer_read[b + 2 * a + 1] = r[a].im as f32;
+                    }
                 }
             }
         }
@@ -1341,8 +1417,21 @@ impl QuantumSpacetimeUniverse {
     }
 
     pub(crate) fn add_dirac_colour_packet(&mut self, x0: f64, y0: f64, sigma: f64, kx: f64, ky: f64, col: [C; 3]) {
+        if !(x0.is_finite()
+            && y0.is_finite()
+            && sigma.is_finite()
+            && kx.is_finite()
+            && ky.is_finite()
+            && col.iter().all(|c| c.re.is_finite() && c.im.is_finite()))
+            || sigma <= 0.0
+        {
+            return;
+        }
         let nco = self.ncol.max(1);
         let stride = 4 * nco;
+        if self.buffer_read.len() < self.n * stride {
+            return;
+        }
         let spinor = crate::dirac2d::su2_band(&crate::dirac2d::dirac2d_matrix(self.mass as f64, kx, ky), 1).1;
         let cn: f64 = col.iter().take(nco).map(|v| v.norm_sqr()).sum::<f64>().sqrt().max(1e-300);
         let (w, h) = (self.w as f64, self.h as f64);

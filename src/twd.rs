@@ -12,64 +12,31 @@
 //! cuasi-energías no llegan a ±π: no hay pseudo-dobladores. El precio: avanza dt celdas por paso, no una.
 //! El término de Wilson mezcla L y R: sirve para teorías vectoriales, no para el W quiral.
 
-use crate::linalg::eig;
+use crate::linalg::{eig, expm_c64};
 use crate::rng::SplitMix64;
 use crate::spinor::{cx, dirac_matrix, m4_zero, M4};
 use crate::sun::C;
-use crate::util::min_image;
+use crate::util::{clamp_finite, min_image};
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
 
 pub type G8 = [[C; 8]; 8];
 
-/// exp(A) de una matriz 8×8 por escalado y cuadrados con Taylor de 18 términos.
+/// exp(A) de una matriz 8×8 delegada a `crate::linalg::expm_c64`.
 fn expm8(a: &G8) -> G8 {
-    let nrm: f64 = a.iter().map(|r| r.iter().map(|z| z.norm()).sum::<f64>()).fold(0.0, f64::max);
-    let s = if nrm > 0.5 { (nrm / 0.5).log2().ceil() as i32 } else { 0 };
-    let sc = 0.5f64.powi(s);
-    let mut b = *a;
-    for r in b.iter_mut() {
-        for z in r.iter_mut() {
-            *z *= sc;
-        }
-    }
-    let mul = |x: &G8, y: &G8| -> G8 {
-        let mut r = [[cx(0.0, 0.0); 8]; 8];
-        for i in 0..8 {
-            for k in 0..8 {
-                if x[i][k] == cx(0.0, 0.0) {
-                    continue;
-                }
-                for j in 0..8 {
-                    r[i][j] += x[i][k] * y[k][j];
-                }
-            }
-        }
-        r
-    };
-    let mut res = [[cx(0.0, 0.0); 8]; 8];
-    let mut term = [[cx(0.0, 0.0); 8]; 8];
+    let mut flat = [cx(0.0, 0.0); 64];
     for i in 0..8 {
-        res[i][i] = cx(1.0, 0.0);
-        term[i][i] = cx(1.0, 0.0);
-    }
-    for k in 1..=18 {
-        term = mul(&term, &b);
-        let f = 1.0 / k as f64;
-        for r in term.iter_mut() {
-            for z in r.iter_mut() {
-                *z *= f;
-            }
-        }
-        for i in 0..8 {
-            for j in 0..8 {
-                res[i][j] += term[i][j];
-            }
+        for j in 0..8 {
+            flat[i * 8 + j] = a[i][j];
         }
     }
-    for _ in 0..s {
-        res = mul(&res, &res);
+    let out = expm_c64(&flat, 8);
+    let mut res = [[cx(0.0, 0.0); 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            res[i][j] = out[i * 8 + j];
+        }
     }
     res
 }
@@ -249,7 +216,7 @@ pub fn unitary_eigen(mat: Vec<C>, d: usize) -> (Vec<f64>, Vec<Vec<C>>) {
     let e = eig(mat, d);
     let eps: Vec<f64> = e.values.iter().map(|l| -l.arg()).collect();
     let mut order: Vec<usize> = (0..d).collect();
-    order.sort_by(|&i, &j| eps[i].partial_cmp(&eps[j]).unwrap());
+    order.sort_by(|&i, &j| eps[i].total_cmp(&eps[j]));
     let mut vecs: Vec<Vec<C>> = Vec::with_capacity(d);
     let mut vals = Vec::with_capacity(d);
     for &i in &order {
@@ -293,6 +260,13 @@ impl Twd {
 }
 
 impl QuantumSpacetimeUniverse {
+    fn twd_ready(&self) -> bool {
+        self.twd.active
+            && self.twd.psi.len() == 4 * self.n
+            && self.twd.e.len() == 3 * self.n
+            && self.twd.a.len() == 3 * self.n
+    }
+
     fn twd_box(&self) -> TwdBox {
         TwdBox { dims: [self.w, self.h, self.d], twist: [cx(1.0, 0.0); 3] }
     }
@@ -307,6 +281,9 @@ impl QuantumSpacetimeUniverse {
     /// Un paso del escenario 7: fermiones (con las corrientes) y, con el campo dinámico, E ← E − q·j y
     /// Maxwell con c = 1 (E += dt·rot B, A −= dt·E).
     pub(crate) fn twd_step_universe(&mut self) {
+        if !self.twd_ready() {
+            return;
+        }
         let bx = self.twd_box();
         let ph = self.twd_phases();
         let n = self.n;
@@ -372,6 +349,7 @@ impl QuantumSpacetimeUniverse {
     /// Con q ≠ 0 y `field_dynamic`, el U(1) es dinámico (Maxwell con c = 1); con q ≠ 0 y sin él, A es un
     /// fondo fijo. La malla tiene que ser 3D con lados pares.
     pub fn set_scenario_twd(&mut self, m: f32, r: f32, dt: f32, q: f32, field_dynamic: bool) {
+        self.message.clear();
         if self.dim != 3 || self.w % 2 != 0 || self.h % 2 != 0 || self.d % 2 != 0 {
             self.set_message("El motor sin dobladores necesita una malla 3D con lados pares (§2.25).");
             return;
@@ -380,12 +358,15 @@ impl QuantumSpacetimeUniverse {
             self.set_scenario(7);
         }
         let n = self.n;
-        let dt = (dt as f64).clamp(0.01, 1.0);
+        let m = clamp_finite(m as f64, -10.0, 10.0, 0.1);
+        let r = clamp_finite(r as f64, 0.0, 10.0, 1.0);
+        let dt = clamp_finite(dt as f64, 0.01, 1.0, 0.3);
+        let q = clamp_finite(q as f64, -10.0, 10.0, 0.0);
         if dt > 0.5 {
             self.set_message("dt > 0,5: las cuasi-energías de los dobladores se acercan a ±π (pseudo-dobladores); el motor necesita dt ≲ 0,5.");
         }
-        self.twd.gates = TwdGates::new(m as f64, r as f64, dt);
-        self.twd.q = q as f64;
+        self.twd.gates = TwdGates::new(m, r, dt);
+        self.twd.q = q;
         self.twd.dynamic = field_dynamic && q != 0.0;
         self.twd.psi = vec![cx(0.0, 0.0); 4 * n];
         self.twd.e = vec![0.0; 3 * n];
@@ -400,10 +381,18 @@ impl QuantumSpacetimeUniverse {
     /// 0)), de norma `amount`; guarda la ley de Gauss como referencia.
     #[allow(clippy::too_many_arguments)]
     pub fn inject_twd_packet(&mut self, x: f32, y: f32, z: f32, sigma: f32, kx: f32, ky: f32, kz: f32, amount: f32) {
-        if !self.twd.active {
+        if !self.twd_ready() {
             return;
         }
-        let k = [kx as f64, ky as f64, kz as f64];
+        let x = clamp_finite(x as f64, -1e6, 1e6, 0.0);
+        let y = clamp_finite(y as f64, -1e6, 1e6, 0.0);
+        let z = clamp_finite(z as f64, -1e6, 1e6, 0.0);
+        let k = [
+            clamp_finite(kx as f64, -1e6, 1e6, 0.0),
+            clamp_finite(ky as f64, -1e6, 1e6, 0.0),
+            clamp_finite(kz as f64, -1e6, 1e6, 0.0),
+        ];
+        let amount = clamp_finite(amount as f64, 0.0, 1e6, 1.0);
         let gm = &self.twd.gates;
         let mw = gm.m + gm.r * k.iter().map(|v| 1.0 - v.cos()).sum::<f64>();
         let beta = dirac_matrix(2, 3);
@@ -423,13 +412,16 @@ impl QuantumSpacetimeUniverse {
             sp[a] = (hk[a][0] / en + if a == 0 { cx(1.0, 0.0) } else { cx(0.0, 0.0) }) * 0.5;
         }
         let s2: f64 = sp.iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt();
+        if s2 <= 1e-30 {
+            return;
+        }
         let (w, h, d) = (self.w as f64, self.h as f64, self.d as f64);
-        let sg = (sigma as f64).max(0.5);
+        let sg = clamp_finite(sigma as f64, 0.5, 1e4, 1.0);
         let mut amps = vec![cx(0.0, 0.0); self.n];
         let mut norm = 0.0;
         for i in 0..self.n {
             let (px, py, pz) = self.coords(i);
-            let (dx, dy, dz) = (min_image(px as f64 - x as f64, w), min_image(py as f64 - y as f64, h), min_image(pz as f64 - z as f64, d));
+            let (dx, dy, dz) = (min_image(px as f64 - x, w), min_image(py as f64 - y, h), min_image(pz as f64 - z, d));
             let arg = (dx * dx + dy * dy + dz * dz) / (2.0 * sg * sg);
             if arg > 40.0 {
                 continue;
@@ -437,7 +429,10 @@ impl QuantumSpacetimeUniverse {
             amps[i] = C::from_polar((-arg).exp(), k[0] * dx + k[1] * dy + k[2] * dz);
             norm += amps[i].norm_sqr();
         }
-        let sc = (amount as f64).sqrt() / norm.max(1e-300).sqrt() / s2;
+        if norm <= 1e-300 {
+            return;
+        }
+        let sc = amount.sqrt() / norm.sqrt() / s2;
         for i in 0..self.n {
             for a in 0..4 {
                 self.twd.psi[4 * i + a] += amps[i] * sp[a] * sc;
@@ -448,12 +443,18 @@ impl QuantumSpacetimeUniverse {
 
     /// Guarda la ley de Gauss actual como referencia.
     pub fn twd_store_gauss(&mut self) {
+        if !self.twd_ready() {
+            return;
+        }
         let g: Vec<f64> = (0..self.n).map(|i| self.twd_gauss_at(i)).collect();
         self.twd.g_ref = g;
     }
 
     /// Fondo U(1) aleatorio: A uniforme en [−amp, amp] por enlace (con E = 0).
     pub fn twd_random_field(&mut self, amp: f32, seed: u32) {
+        if !self.twd_ready() || !amp.is_finite() {
+            return;
+        }
         let mut rng = SplitMix64::new(seed as u64 ^ 0x7D);
         for v in self.twd.a.iter_mut() {
             *v = amp as f64 * (2.0 * rng.next_f64() - 1.0);
@@ -463,6 +464,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Transformación gauge aleatoria (ψ → e^{iqχ}ψ, A → A + χ(r + â) − χ(r)).
     pub fn twd_random_gauge(&mut self, amp: f32, seed: u32) {
+        if !self.twd_ready() || !amp.is_finite() {
+            return;
+        }
         let mut rng = SplitMix64::new(seed as u64 ^ 0x6A);
         let chi: Vec<f64> = (0..self.n).map(|_| amp as f64 * rng.gauss()).collect();
         let q = self.twd.q;
@@ -481,16 +485,25 @@ impl QuantumSpacetimeUniverse {
     }
 
     pub fn twd_norm(&self) -> f64 {
+        if !self.twd_ready() {
+            return 0.0;
+        }
         (0..self.n).map(|i| self.twd_density(i)).sum()
     }
 
     /// Máximo de |G − G_ref| (Gauss).
     pub fn twd_gauss_residual(&self) -> f64 {
+        if !self.twd_ready() {
+            return 0.0;
+        }
         (0..self.n).map(|i| (self.twd_gauss_at(i) - self.twd.g_ref.get(i).copied().unwrap_or(0.0)).abs()).fold(0.0, f64::max)
     }
 
     /// Distancia máxima entre las densidades de dos universos del escenario 7 (copias gauge).
     pub fn twd_density_distance(&self, other: &QuantumSpacetimeUniverse) -> f64 {
+        if !self.twd_ready() || !other.twd_ready() || other.n != self.n {
+            return f64::NAN;
+        }
         (0..self.n).map(|i| (self.twd_density(i) - other.twd_density(i)).abs()).fold(0.0, f64::max)
     }
 
@@ -498,17 +511,25 @@ impl QuantumSpacetimeUniverse {
     /// K; `simple` = orden sin simetrizar.
     pub fn twd_cell_spectrum(&self, kx: f32, ky: f32, kz: f32, simple: bool) -> Vec<f64> {
         let g = &self.twd.gates;
-        let bx = cell_box([kx as f64, ky as f64, kz as f64]);
+        let bx = cell_box([
+            clamp_finite(kx as f64, -1e6, 1e6, 0.0),
+            clamp_finite(ky as f64, -1e6, 1e6, 0.0),
+            clamp_finite(kz as f64, -1e6, 1e6, 0.0),
+        ]);
         let mat = box_step_matrix(&bx, g, g.m, &[], simple);
         let mut v: Vec<f64> = eig(mat, 32).values.iter().map(|l| -l.arg()).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(f64::total_cmp);
         v
     }
 
     /// Energías del Wilson–Dirac continuo en el momento por sitio k (las dos ramas, por espín).
     pub fn twd_wilson_dirac_energy(&self, kx: f32, ky: f32, kz: f32) -> f64 {
         let g = &self.twd.gates;
-        let k = [kx as f64, ky as f64, kz as f64];
+        let k = [
+            clamp_finite(kx as f64, -1e6, 1e6, 0.0),
+            clamp_finite(ky as f64, -1e6, 1e6, 0.0),
+            clamp_finite(kz as f64, -1e6, 1e6, 0.0),
+        ];
         let mw = g.m + g.r * k.iter().map(|v| 1.0 - v.cos()).sum::<f64>();
         (mw * mw + k.iter().map(|v| v.sin().powi(2)).sum::<f64>()).sqrt()
     }
@@ -517,9 +538,13 @@ impl QuantumSpacetimeUniverse {
     /// capa de 12 direcciones × 60 radios en |k| ± 0,06 alrededor de la resonancia. Pares por sitio y
     /// por unidad de tiempo.
     pub fn twd_pair_rate_higgs(&mut self, m_f: f32, m_h: f32, amplitude: f32, dt: f32, t_phys: f32) -> f64 {
-        let (mf, mh, dm, dt) = (m_f as f64, m_h as f64, amplitude as f64, dt as f64);
+        if !m_f.is_finite() || !m_h.is_finite() || !amplitude.is_finite() || !dt.is_finite() || dt <= 0.0 || !t_phys.is_finite() || t_phys <= 0.0 {
+            return f64::NAN;
+        }
+        let (mf, mh, dm) = (m_f as f64, m_h as f64, amplitude as f64);
+        let dt = clamp_finite(dt as f64, 1e-3, 1.0, 0.1);
         let gates = TwdGates::new(mf, 1.0, dt);
-        let steps = (t_phys as f64 / dt).round() as usize;
+        let steps = ((t_phys as f64 / dt).round() as usize).clamp(1, 50_000);
         let kres = ((0.5 * mh).powi(2) - mf * mf).max(1e-6).sqrt();
         let (qmin, nr, dirs) = ((kres - 0.06).max(0.002), 60usize, fib_dirs(12));
         let dq = 0.12 / nr as f64;
@@ -536,7 +561,7 @@ impl QuantumSpacetimeUniverse {
                 let (eps, vecs) = unitary_eigen(u0, 32);
                 // mar físico: los dos estados de la rama negativa más cercanos a 0
                 let mut neg: Vec<usize> = (0..32).filter(|&i| eps[i] < 0.0).collect();
-                neg.sort_by(|&a, &b| eps[b].partial_cmp(&eps[a]).unwrap());
+                neg.sort_by(|&a, &b| eps[b].total_cmp(&eps[a]));
                 let mut occ: Vec<Vec<C>> = neg.iter().take(2).map(|&i| vecs[i].clone()).collect();
                 for t in 0..steps {
                     let loc = gates.local(mf + dm * (mh * t as f64 * dt).cos());
@@ -564,11 +589,15 @@ impl QuantumSpacetimeUniverse {
     /// §3.23: probabilidad de par por espín de un modo con k⊥ fijo cuando un E uniforme barre k_z de
     /// −1,2 a +1,2 (q·A_z(t) = −q·E·t en los enlaces z).
     pub fn twd_landau_zener(&mut self, m: f32, q_e: f32, k_perp: f32, dt: f32) -> f64 {
-        let (dt, qe) = (dt as f64, q_e as f64);
+        if !m.is_finite() || !q_e.is_finite() || (q_e as f64).abs() < 1e-12 || !k_perp.is_finite() || !dt.is_finite() || dt <= 0.0 {
+            return f64::NAN;
+        }
+        let dt = clamp_finite(dt as f64, 1e-3, 1.0, 0.05);
+        let qe = q_e as f64;
         let gates = TwdGates::new(m as f64, 1.0, dt);
         let k0 = [k_perp as f64, 0.0, -1.2];
         let bx = cell_box([2.0 * k0[0], 2.0 * k0[1], 2.0 * k0[2]]);
-        let steps = (2.4 / (qe * dt)).round() as usize;
+        let steps = ((2.4 / (qe.abs() * dt)).round() as usize).clamp(1, 50_000);
         let ph_of = |theta: f64| -> Vec<C> {
             let mut ph = vec![cx(1.0, 0.0); 3 * 8];
             for i in 0..8 {
@@ -579,7 +608,7 @@ impl QuantumSpacetimeUniverse {
         let u0 = box_step_matrix(&bx, &gates, gates.m, &ph_of(0.0), false);
         let (eps, vecs) = unitary_eigen(u0, 32);
         let mut neg: Vec<usize> = (0..32).filter(|&i| eps[i] < 0.0).collect();
-        neg.sort_by(|&a, &b| eps[b].partial_cmp(&eps[a]).unwrap());
+        neg.sort_by(|&a, &b| eps[b].total_cmp(&eps[a]));
         let mut occ: Vec<Vec<C>> = neg.iter().take(2).map(|&i| vecs[i].clone()).collect();
         // q·A_z(t) = −q·E·t: la fase del enlace z es e^{iqA} = e^{−iqE·t}
         let mut qa = 0.0;
@@ -594,7 +623,7 @@ impl QuantumSpacetimeUniverse {
         let (eps1, vecs1) = unitary_eigen(u1, 32);
         // rama física positiva: los dos estados positivos más cercanos a 0
         let mut pos: Vec<usize> = (0..32).filter(|&i| eps1[i] > 0.0).collect();
-        pos.sort_by(|&a, &b| eps1[a].partial_cmp(&eps1[b]).unwrap());
+        pos.sort_by(|&a, &b| eps1[a].total_cmp(&eps1[b]));
         let mut p = 0.0;
         for v in &occ {
             for &i in pos.iter().take(2) {
@@ -610,10 +639,14 @@ impl QuantumSpacetimeUniverse {
     /// Devuelve [pasos + 1, E(t)…, energía total por sitio…]: el campo ½E² más la energía de Floquet de
     /// los fermiones, Σ ε/dt de los autovalores e^{−iε} del paso (cada 10 pasos; NaN en los demás).
     pub fn twd_homogeneous_run(&mut self, m: f32, q: f32, e0: f32, cells: u32, t_phys: f32, dt: f32) -> *const f64 {
-        let (m, q, dt) = (m as f64, q as f64, dt as f64);
+        let m = clamp_finite(m as f64, -10.0, 10.0, 0.3);
+        let q = clamp_finite(q as f64, -10.0, 10.0, 0.3);
+        let e0 = clamp_finite(e0 as f64, -10.0, 10.0, 0.01);
+        let dt = clamp_finite(dt as f64, 1e-3, 1.0, 0.2);
+        let t_phys = clamp_finite(t_phys as f64, 0.0, 50_000.0, 200.0);
         let gates = TwdGates::new(m, 1.0, dt);
-        let nc = (cells as usize).max(1);
-        let steps = (t_phys as f64 / dt).round() as usize;
+        let nc = (cells as usize).clamp(1, 32);
+        let steps = ((t_phys / dt).round() as usize).clamp(0, 50_000);
         let nsites = (8 * nc * nc * nc) as f64;
         // mar: los 16 estados negativos del operador libre en cada K
         let mut sectors: Vec<(TwdBox, Vec<Vec<C>>)> = Vec::new();
@@ -653,7 +686,7 @@ impl QuantumSpacetimeUniverse {
             }
             ef / nsites + 0.5 * e * e
         };
-        let (mut e, mut a) = (e0 as f64, 0.0f64);
+        let (mut e, mut a) = (e0, 0.0f64);
         let mut es = vec![e];
         let mut en = vec![energy(&sectors, q * a, e)];
         for t in 0..steps {
@@ -689,11 +722,16 @@ impl QuantumSpacetimeUniverse {
     /// sitios en z), mar lleno, E constante a lo largo de z. Devuelve dj_z/dt (corriente por sitio y por
     /// unidad de tiempo) dividida entre (qB/2π)(qE/π).
     pub fn twd_anomaly_run(&mut self, l: u32, flux: u32, q_e: f32, m: f32, dt: f32, nz: u32, t_phys: f32) -> f64 {
-        let (l, dt, qe) = (l as usize, dt as f64, q_e as f64);
+        if flux == 0 || !q_e.is_finite() || (q_e as f64).abs() < 1e-12 || !m.is_finite() || !dt.is_finite() || dt <= 0.0 || !t_phys.is_finite() || t_phys <= 0.0 {
+            return f64::NAN;
+        }
+        let l = ((l as usize).clamp(2, 16) & !1).max(2);
+        let dt = clamp_finite(dt as f64, 1e-3, 1.0, 0.2);
+        let qe = q_e as f64;
         let gates = TwdGates::new(m as f64, 1.0, dt);
         let qb = 2.0 * PI * flux as f64 / (l * l) as f64;
-        let steps = (t_phys as f64 / dt).round() as usize;
-        let nzz = nz.max(1) as usize;
+        let steps = ((t_phys as f64 / dt).round() as usize).clamp(2, 20_000);
+        let nzz = (nz as usize).clamp(1, 64);
         let mut sectors: Vec<(TwdBox, Vec<Vec<C>>)> = Vec::new();
         let base_ph = |bx: &TwdBox, theta_z: f64| -> Vec<C> {
             let n = bx.n();

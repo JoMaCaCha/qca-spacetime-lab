@@ -9,27 +9,23 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
   rust-tests:
-    name: Rust Research Suites (Phases 18-20)
+    name: Rust Clippy, CLI Check & Full Test Suite (195 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Run Phase 18 tests (Vías A, B, C core)
-        run: cargo test --release --lib tests::phase18 -- --nocapture
-      - name: Run Phase 19 tests (Chiral 4+1D, Adaptive FSS, Continuum/CFT)
-        run: cargo test --release --lib tests::phase19 -- --nocapture
-      - name: Run Phase 20 tests (Yee-4 S4 3D, Wang-Landau, 2-site TDVP & BKT)
-        run: cargo test --release --lib tests::phase20 -- --nocapture
+      - name: Lint all Rust targets with clippy
+        run: cargo clippy --locked --all-targets
+      - name: Check native CLI binary (qsu_cli)
+        run: cargo check --locked --bin qsu_cli
+      - name: Run full Rust library test suite (195 tests)
+        run: cargo test --release --locked --lib
 
   python-independent-verification:
     name: Independent Python/SciPy Cross-Verification
@@ -39,14 +35,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install NumPy, SciPy, Matplotlib
-        run: pip install numpy scipy matplotlib
+      - name: Install pinned Python dependencies
+        run: pip install -r requirements-ci.txt
       - name: Verify Pathway A (Mlodinow-Brun 6x6, SO(3) chi^2, Yee-4 S4)
         run: python scripts/verify_via_a_mlodinow_brun.py
       - name: Verify Pathway C (2-Flavor Schwinger sparse eigsh & Schrieffer-Wolff)
         run: python scripts/verify_via_c_schwinger_exact.py
       - name: Regenerate publication figures & LaTeX tables
         run: python scripts/generate_publication_assets.py
+      - name: Regenerate PRD Comment birefringence figure
+        run: python scripts/generate_comment_figure.py
 
   wasm-build-and-pages:
     name: Build WASM SIMD & Prepare Interactive Lab
@@ -57,20 +55,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - uses: jetli/wasm-pack-action@v0.4.0
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Build WASM SIMD package
         run: wasm-pack build --target web --release
-      - name: Syntax check generated JS glue
-        run: node --check pkg/qca_spacetime_lab.js
+      - name: Syntax check frontend & generated JS modules
+        run: node --check js/app.js && node --check js/worker.js && node --check pkg/qca_spacetime_lab.js
+      - name: Node/WASM runtime smoke test
+        run: |
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            import { initSync, QuantumSpacetimeUniverse } from './pkg/qca_spacetime_lab.js';
+            initSync({ module: readFileSync('./pkg/qca_spacetime_lab_bg.wasm') });
+            const u = new QuantumSpacetimeUniverse(16, 16, 1, 0.25, 0.2, 1.0);
+            u.step();
+            const n = u.total_norm();
+            u.free();
+            if (!Number.isFinite(n)) {
+              throw new Error('Non-finite norm from WASM smoke test: ' + n);
+            }
+            console.log('WASM runtime smoke test OK (total_norm=' + n + ')');
+          "
       - name: Assemble GitHub Pages site
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          mkdir -p _site
+          mkdir -p _site/pkg
           cp index.html _site/
-          cp -r pkg _site/
+          cp -r styles _site/
+          cp -r js _site/
+          cp pkg/qca_spacetime_lab.js pkg/qca_spacetime_lab_bg.wasm _site/pkg/
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
@@ -82,6 +98,12 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: wasm-build-and-pages
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

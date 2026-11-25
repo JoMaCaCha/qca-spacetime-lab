@@ -23,7 +23,13 @@ pub struct AutoCorr {
 
 impl AutoCorr {
     pub fn new() -> Self {
-        AutoCorr { active: false, psi0: Vec::new(), c: vec![Complex::new(0.0, 0.0); AUTOCORR_MAX], count: 0, spec: Vec::new(), bins: 0 }
+        AutoCorr { active: false, psi0: Vec::new(), c: Vec::new(), count: 0, spec: Vec::new(), bins: 0 }
+    }
+
+    pub fn ensure_buf(&mut self) {
+        if self.c.len() != AUTOCORR_MAX {
+            self.c.resize(AUTOCORR_MAX, Complex::new(0.0, 0.0));
+        }
     }
 }
 
@@ -49,6 +55,7 @@ impl QuantumSpacetimeUniverse {
     /// Acumula c(t) tras cada paso (si está activo).
     pub(crate) fn autocorr_record(&mut self) {
         if self.autocorr.active && self.autocorr.count < AUTOCORR_MAX {
+            self.autocorr.ensure_buf();
             let v = self.overlap_with_psi0();
             let k = self.autocorr.count;
             self.autocorr.c[k] = v;
@@ -61,7 +68,7 @@ impl QuantumSpacetimeUniverse {
         let n = self.n;
         let (w, h) = (self.w, self.h);
         let (mut ax, mut ay) = (0.0, 0.0);
-        if self.em.mode != 0 {
+        if self.em.mode != 0 && self.em.a.len() >= 2 * n {
             ax = self.em.a[0];
             ay = self.em.a[n];
             for i in 0..n {
@@ -71,21 +78,38 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let q = if self.em.mode != 0 { self.em.q } else { 0.0 };
+        let nco = self.ncol.max(1);
+        let stride = self.stride();
+        if self.nc < 2 || self.buffer_read.len() < n * stride {
+            return 0.0;
+        }
         let mut fft = crate::fftn::FftN::<f64>::new(w, h, 1);
-        let mut up: Vec<Complex<f64>> = (0..n).map(|i| Complex::new(self.buffer_read[4 * i] as f64, self.buffer_read[4 * i + 1] as f64)).collect();
-        let mut dn: Vec<Complex<f64>> = (0..n).map(|i| Complex::new(self.buffer_read[4 * i + 2] as f64, self.buffer_read[4 * i + 3] as f64)).collect();
-        fft.forward(&mut up);
-        fft.forward(&mut dn);
         let m = self.mass as f64;
         let (mut tot, mut plus) = (0.0, 0.0);
-        for i in 0..n {
-            let (x, y, _) = self.coords(i);
-            let kx = crate::fftn::wavenumber(x, w);
-            let ky = crate::fftn::wavenumber(y, h);
-            let (_, v) = su2_band(&dirac2d_matrix(m, kx - q * ax, ky - q * ay), 1);
-            let ov = v[0].conj() * up[i] + v[1].conj() * dn[i];
-            plus += ov.norm_sqr();
-            tot += up[i].norm_sqr() + dn[i].norm_sqr();
+        for col in 0..nco {
+            let mut up: Vec<Complex<f64>> = (0..n)
+                .map(|i| {
+                    let o = i * stride + 2 * col;
+                    Complex::new(self.buffer_read[o] as f64, self.buffer_read[o + 1] as f64)
+                })
+                .collect();
+            let mut dn: Vec<Complex<f64>> = (0..n)
+                .map(|i| {
+                    let o = i * stride + 2 * (nco + col);
+                    Complex::new(self.buffer_read[o] as f64, self.buffer_read[o + 1] as f64)
+                })
+                .collect();
+            fft.forward(&mut up);
+            fft.forward(&mut dn);
+            for i in 0..n {
+                let (x, y, _) = self.coords(i);
+                let kx = crate::fftn::wavenumber(x, w);
+                let ky = crate::fftn::wavenumber(y, h);
+                let (_, v) = su2_band(&dirac2d_matrix(m, kx - q * ax, ky - q * ay), 1);
+                let ov = v[0].conj() * up[i] + v[1].conj() * dn[i];
+                plus += ov.norm_sqr();
+                tot += up[i].norm_sqr() + dn[i].norm_sqr();
+            }
         }
         if tot > 0.0 {
             plus / tot
@@ -105,9 +129,10 @@ impl QuantumSpacetimeUniverse {
             self.start_spinor_autocorrelation(seed, 0.0, 0.0, 0.0, 0.0, false);
             return;
         }
+        self.autocorr.ensure_buf();
         let n = self.n;
-        let nc = self.nc;
-        let stride = 2 * nc;
+        let namp = self.namp();
+        let stride = self.stride();
         let mut rng = SplitMix64::new(seed as u64 ^ 0xAC0F);
         let dirac = self.scenario != 0 && self.scenario != 1;
         if dirac {
@@ -125,9 +150,9 @@ impl QuantumSpacetimeUniverse {
                     self.box_blur_axis(&mut field, &mut line, axis, 4);
                 }
             }
-            let inv = 1.0 / (nc as f32).sqrt();
+            let inv = 1.0 / (namp.max(1) as f32).sqrt();
             for i in 0..n {
-                for k in 0..nc {
+                for k in 0..namp {
                     self.buffer_read[i * stride + 2 * k] = field[2 * i] * inv;
                     self.buffer_read[i * stride + 2 * k + 1] = field[2 * i + 1] * inv;
                 }
@@ -153,6 +178,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Sigue acumulando c(t) con el estado actual como ψ₀ (sin reemplazar el campo).
     pub fn start_autocorrelation_from_current(&mut self) {
+        self.autocorr.ensure_buf();
         if self.sw.active {
             self.sw_mirror();
         }
@@ -169,10 +195,14 @@ impl QuantumSpacetimeUniverse {
     /// de (x₀, y₀, z₀) si radius > 0 (en 3D con `uniform_z`, a menos de radius del eje paralelo a z),
     /// y uniforme en z si `uniform_z` (k_z = 0). Reemplaza el campo por ψ₀ y empieza a acumular c(t).
     pub fn start_spinor_autocorrelation(&mut self, seed: u32, x0: f32, y0: f32, z0: f32, radius: f32, uniform_z: bool) {
+        if !(x0.is_finite() && y0.is_finite() && z0.is_finite() && radius.is_finite()) {
+            return;
+        }
         if !self.sw.active {
             self.start_autocorrelation(seed);
             return;
         }
+        self.autocorr.ensure_buf();
         let n = self.n;
         let st = 2 * self.sw_namp();
         let mut rng = SplitMix64::new(seed as u64 ^ 0xAC0F);
@@ -268,7 +298,12 @@ impl QuantumSpacetimeUniverse {
     /// fracción de ⟨ψ₀|ψ₀⟩ en los estados con cuasi-energía en el intervalo.
     pub fn autocorrelation_weight(&self, lo: f32, hi: f32) -> f64 {
         let nt = self.autocorr.count;
-        if nt < 4 {
+        if nt < 4 || nt > self.autocorr.c.len() || !(lo.is_finite() && hi.is_finite()) {
+            return 0.0;
+        }
+        let lo = (lo as f64).clamp(-PI, PI);
+        let hi = (hi as f64).clamp(-PI, PI);
+        if hi <= lo {
             return 0.0;
         }
         let c = &self.autocorr.c[..nt];
@@ -282,8 +317,7 @@ impl QuantumSpacetimeUniverse {
             }
             s
         };
-        let (lo, hi) = (lo as f64, hi as f64);
-        let steps = ((hi - lo) / (PI / (8.0 * nt as f64))).ceil().max(16.0) as usize;
+        let steps = ((hi - lo) / (PI / (8.0 * nt as f64))).ceil().clamp(16.0, 200_000.0) as usize;
         let dw = (hi - lo) / steps as f64;
         let mut acc = 0.0;
         for j in 0..steps {
@@ -292,10 +326,13 @@ impl QuantumSpacetimeUniverse {
         acc / (2.0 * PI * c[0].re.max(1e-300))
     }
 
-    /// Fracción de ∫S(ω) (el espectro de §2.10, |FFT(c·Hann)|²) en |ω| ∈ [lo, hi]: el "peso
+    /// Fracción de ∫S(ω) (el espectro de §2.10, |FFT(c·Hann)|²) en ω ∈ [lo, hi]: el "peso
     /// espectral" que se ve en la gráfica. Pesa más los estados con mucho solapamiento (picos
     /// aislados) que la fracción de la norma de `autocorrelation_weight`.
     pub fn autocorrelation_spectrum_fraction(&mut self, lo: f32, hi: f32) -> f64 {
+        if !(lo.is_finite() && hi.is_finite()) || hi < lo {
+            return 0.0;
+        }
         let nb = self.autocorrelation_spectrum() as usize;
         let sp = &self.autocorr.spec;
         let (mut a, mut t) = (0.0f64, 0.0f64);
@@ -317,7 +354,7 @@ impl QuantumSpacetimeUniverse {
     /// mientras |c(t)| no ha decaído; sirve para los relojes de §3.12).
     pub fn autocorrelation_rate(&self) -> f64 {
         let nt = self.autocorr.count;
-        if nt < 3 {
+        if nt < 3 || nt > self.autocorr.c.len() {
             return f64::NAN;
         }
         let c = &self.autocorr.c[..nt];
@@ -335,6 +372,11 @@ impl QuantumSpacetimeUniverse {
 
     pub fn autocorrelation_spectrum_ptr(&self) -> *const f32 {
         self.autocorr.spec.as_ptr()
+    }
+
+    /// Número de f32 en `autocorrelation_spectrum_ptr` (2·bins pares [ω, S(ω)]).
+    pub fn autocorrelation_spectrum_len(&self) -> u32 {
+        self.autocorr.spec.len() as u32
     }
 
     /// §2.10: fracción de la norma en la banda +1 (escenario Dirac 2D); −1 si A no es uniforme.

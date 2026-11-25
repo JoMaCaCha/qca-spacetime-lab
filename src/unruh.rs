@@ -9,7 +9,8 @@
 //!   frente al estado fundamental de Gross–Pitaevskii–Poisson radial con la misma N (tiempo
 //!   imaginario con la cinética implícita), los dos en el espacio infinito y sin restar ⟨ρ⟩.
 
-use crate::linalg::{self, C};
+use crate::linalg::{self, expm_c64, C};
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
@@ -17,45 +18,6 @@ use wasm_bindgen::prelude::*;
 #[inline]
 fn cz() -> C {
     C::new(0.0, 0.0)
-}
-
-/// exp(A) de una matriz n×n por escalado y cuadrados con Taylor de 20 términos.
-fn expm(a: &[C], n: usize) -> Vec<C> {
-    let nrm = (0..n).map(|i| (0..n).map(|j| a[i * n + j].norm()).sum::<f64>()).fold(0.0, f64::max);
-    let s = if nrm > 0.5 { (nrm / 0.5).log2().ceil() as i32 } else { 0 };
-    let sc = 0.5f64.powi(s);
-    let b: Vec<C> = a.iter().map(|z| z * sc).collect();
-    let mul = |x: &[C], y: &[C]| -> Vec<C> {
-        let mut r = vec![cz(); n * n];
-        for i in 0..n {
-            for k in 0..n {
-                let xv = x[i * n + k];
-                for j in 0..n {
-                    r[i * n + j] += xv * y[k * n + j];
-                }
-            }
-        }
-        r
-    };
-    let mut res = vec![cz(); n * n];
-    let mut term = vec![cz(); n * n];
-    for i in 0..n {
-        res[i * n + i] = C::new(1.0, 0.0);
-        term[i * n + i] = C::new(1.0, 0.0);
-    }
-    for k in 1..=20 {
-        term = mul(&term, &b);
-        for z in term.iter_mut() {
-            *z /= k as f64;
-        }
-        for (r, t) in res.iter_mut().zip(&term) {
-            *r += t;
-        }
-    }
-    for _ in 0..s {
-        res = mul(&res, &res);
-    }
-    res
 }
 
 /// Hopping de Wilson–Dirac c_x†·A·c_{x+1} con A = −(r/2)σ_z − (i/2)σ_x (base de espín (↑, ↓)).
@@ -115,7 +77,7 @@ fn sea_correlation(ell: usize, m: f64, r: f64, dt: f64, nk: usize) -> Vec<C> {
             he[(2 + s) * 4 + t] = ad[s * 2 + t];
         }
     }
-    let ue = expm(&he.iter().map(|z| z * mi * (0.5 * dt)).collect::<Vec<_>>(), 4);
+    let ue = expm_c64(&he.iter().map(|z| z * mi * (0.5 * dt)).collect::<Vec<_>>(), 4);
     let mut ul = vec![cz(); 16];
     let w = dt * (m + r);
     for (i, sgn) in [1.0, -1.0, 1.0, -1.0].iter().enumerate() {
@@ -143,7 +105,7 @@ fn sea_correlation(ell: usize, m: f64, r: f64, dt: f64, nk: usize) -> Vec<C> {
                 ho[s * 4 + 2 + t] = ad[s * 2 + t] * em;
             }
         }
-        let uo = expm(&ho.iter().map(|z| z * mi * (0.5 * dt)).collect::<Vec<_>>(), 4);
+        let uo = expm_c64(&ho.iter().map(|z| z * mi * (0.5 * dt)).collect::<Vec<_>>(), 4);
         let u = mul4(&mul4(&mul4(&mul4(&ue, &uo), &ul), &uo), &ue);
         let e = linalg::eig(u, 4);
         // las dos bandas de cuasi-energía negativa (λ = e^{−iε·dt}, ε < 0 ⇔ arg λ > 0)
@@ -163,8 +125,10 @@ fn sea_correlation(ell: usize, m: f64, r: f64, dt: f64, nk: usize) -> Vec<C> {
                 }
             }
             let nn: f64 = sel[i].iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
-            for z in sel[i].iter_mut() {
-                *z /= nn;
+            if nn > 1e-300 {
+                for z in sel[i].iter_mut() {
+                    *z /= nn;
+                }
             }
         }
         let mut pk = vec![cz(); 16];
@@ -226,13 +190,15 @@ fn ch_generator(ell: usize, m: f64, r: f64) -> Vec<C> {
 
 /// Los `count` niveles de menor |ω| del generador: [ω/T, n] con T = 1/2π.
 pub(crate) fn unruh_levels(ell: usize, dt: f64, count: usize) -> Vec<f64> {
-    let ell = ell.clamp(4, 400);
+    let ell = ell.clamp(4, 300);
+    let dt = clamp_finite(dt, 0.0, 2.0, 0.0);
     let (m, r) = (0.0, 1.0);
     let cmat = sea_correlation(ell, m, r, dt, 8192);
     let n2 = 2 * ell;
+    let count = count.min(n2);
     let e = linalg::eig(ch_generator(ell, m, r), n2);
     let mut idx: Vec<usize> = (0..n2).collect();
-    idx.sort_by(|&a, &b| e.values[a].re.abs().partial_cmp(&e.values[b].re.abs()).unwrap());
+    idx.sort_by(|&a, &b| e.values[a].re.abs().total_cmp(&e.values[b].re.abs()));
     let mut out = Vec::with_capacity(2 * count);
     for &j in idx.iter().take(count) {
         let v = &e.vectors[j];
@@ -253,6 +219,18 @@ pub(crate) fn unruh_levels(ell: usize, dt: f64, count: usize) -> Vec<f64> {
 /// Lane–Emden con saturación, h″ + 2h′/r = −4πγ·(ρ(h) − ⟨ρ⟩), desde h(0) = |g|·f(ρ₀) hasta h = 0
 /// (RK4, paso 0,002). `mean` = ⟨ρ⟩ restada (0 en el espacio infinito). Devuelve (r, ρ, borde).
 fn lane_emden(ga: f64, gamma: f64, rho0: f64, emax: f64, mean: f64) -> (Vec<f64>, Vec<f64>, f64) {
+    if !ga.is_finite()
+        || ga <= 0.0
+        || !gamma.is_finite()
+        || gamma <= 0.0
+        || !rho0.is_finite()
+        || rho0 <= 0.0
+        || !emax.is_finite()
+        || emax <= 0.0
+        || !mean.is_finite()
+    {
+        return (vec![0.0], vec![0.0], f64::NAN);
+    }
     let f = |rho: f64| rho / (1.0 + rho / emax);
     let rho_of_h = |h: f64| {
         let s = (h / ga).max(0.0);
@@ -270,14 +248,20 @@ fn lane_emden(ga: f64, gamma: f64, rho0: f64, emax: f64, mean: f64) -> (Vec<f64>
     let mut tf_r = vec![0.0];
     let mut tf_rho = vec![rho0];
     let mut edge = f64::NAN;
-    while r < 1e4 {
+    let mut iters = 0usize;
+    while r < 1e4 && iters < 200_000 {
+        iters += 1;
         let k1 = rhs(r, y);
         let k2 = rhs(r + 0.5 * dr, [y[0] + 0.5 * dr * k1[0], y[1] + 0.5 * dr * k1[1]]);
         let k3 = rhs(r + 0.5 * dr, [y[0] + 0.5 * dr * k2[0], y[1] + 0.5 * dr * k2[1]]);
         let k4 = rhs(r + dr, [y[0] + dr * k3[0], y[1] + dr * k3[1]]);
         let yn = [y[0] + dr / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]), y[1] + dr / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1])];
+        if !yn[0].is_finite() || !yn[1].is_finite() {
+            break;
+        }
         if yn[0] <= 0.0 {
-            edge = r + dr * y[0] / (y[0] - yn[0]);
+            let denom = y[0] - yn[0];
+            edge = if denom.abs() > 1e-30 { r + dr * y[0] / denom } else { r };
             tf_r.push(edge);
             tf_rho.push(0.0);
             break;
@@ -302,15 +286,31 @@ fn shell_mass(tf_r: &[f64], tf_rho: &[f64]) -> f64 {
 /// Thomas–Fermi con saturación y GP–Poisson radial: [N, borde TF, R½ TF, R½ GP, ρ₀ GP], con R½ el
 /// radio en que la densidad baja a la mitad de la central.
 pub(crate) fn thomas_fermi_profiles(g: f64, gamma: f64, mass_eff: f64, rho0: f64, emax: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    if !g.is_finite()
+        || !gamma.is_finite()
+        || gamma <= 0.0
+        || !mass_eff.is_finite()
+        || mass_eff <= 0.0
+        || !rho0.is_finite()
+        || rho0 <= 0.0
+        || !emax.is_finite()
+        || emax <= 0.0
+    {
+        return (vec![f64::NAN; 5], Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    }
     let ga = g.abs().max(1e-12);
     let f = |rho: f64| rho / (1.0 + rho / emax);
     let (tf_r, tf_rho, edge) = lane_emden(ga, gamma, rho0, emax, 0.0);
     let n_tf = shell_mass(&tf_r, &tf_rho);
     let half_radius = |rs: &[f64], rho: &[f64]| -> f64 {
+        if rho.is_empty() {
+            return f64::NAN;
+        }
         let target = 0.5 * rho[0];
         for i in 1..rs.len() {
             if rho[i] <= target {
-                let t = (rho[i - 1] - target) / (rho[i - 1] - rho[i]);
+                let d = rho[i - 1] - rho[i];
+                let t = if d.abs() > 1e-30 { (rho[i - 1] - target) / d } else { 0.0 };
                 return rs[i - 1] + t * (rs[i] - rs[i - 1]);
             }
         }
@@ -318,16 +318,18 @@ pub(crate) fn thomas_fermi_profiles(g: f64, gamma: f64, mass_eff: f64, rho0: f64
     };
     let rh_tf = half_radius(&tf_r, &tf_rho);
     // GP radial en una malla escalonada r_i = (i + ½)h hasta 3·borde, Dirichlet fuera
-    let hh = 0.05;
-    let rmax = 3.0 * if edge.is_finite() { edge } else { 30.0 };
-    let n = (rmax / hh) as usize;
+    let rmax = 3.0 * if edge.is_finite() && edge > 0.0 { edge } else { 30.0 };
+    let n_raw = (rmax / 0.05) as usize;
+    let n = n_raw.clamp(4, 2048);
+    let hh = if n != n_raw { rmax / n as f64 } else { 0.05 };
     let rg: Vec<f64> = (0..n).map(|i| (i as f64 + 0.5) * hh).collect();
     let interp_tf = |x: f64| -> f64 {
-        if x >= *tf_r.last().unwrap() {
+        if tf_r.len() < 2 || x >= *tf_r.last().unwrap() {
             return 0.0;
         }
         let i = tf_r.partition_point(|&v| v < x).max(1);
-        let t = (x - tf_r[i - 1]) / (tf_r[i] - tf_r[i - 1]);
+        let d = tf_r[i] - tf_r[i - 1];
+        let t = if d.abs() > 1e-30 { (x - tf_r[i - 1]) / d } else { 0.0 };
         tf_rho[i - 1] + t * (tf_rho[i] - tf_rho[i - 1])
     };
     let mut u: Vec<f64> = rg.iter().map(|&x| (interp_tf(x) + 1e-10).sqrt()).collect();
@@ -378,6 +380,9 @@ pub(crate) fn thomas_fermi_profiles(g: f64, gamma: f64, mass_eff: f64, rho0: f64
         rhs_v[0] /= di[0];
         for i in 1..n {
             let den = di[i] - lo[i] * cp[i - 1];
+            if den.abs() <= 1e-30 {
+                break;
+            }
             cp[i] = up[i] / den;
             rhs_v[i] = (rhs_v[i] - lo[i] * rhs_v[i - 1]) / den;
         }
@@ -385,6 +390,9 @@ pub(crate) fn thomas_fermi_profiles(g: f64, gamma: f64, mass_eff: f64, rho0: f64
             rhs_v[i] -= cp[i] * rhs_v[i + 1];
         }
         let nn: f64 = rhs_v.iter().zip(&wv).map(|(a, w)| a * a * w).sum();
+        if !(nn > 1e-300 && nn.is_finite()) {
+            break;
+        }
         let s = (n_tf / nn).sqrt();
         let mut diff = 0.0f64;
         for i in 0..n {
@@ -406,22 +414,23 @@ impl QuantumSpacetimeUniverse {
     /// §2.28: los 10 niveles más bajos [ω/T, n] del generador de Casini–Huerta (T = 1/2π); dt = 0:
     /// mar del hamiltoniano, dt > 0: mar de Floquet del Trotter simétrico (celda de dos sitios).
     pub fn unruh_occupations(&mut self, ell: u32, dt: f32) -> *const f64 {
-        self.an.out = unruh_levels(ell as usize, dt.max(0.0) as f64, 10);
+        let dt = clamp_finite(dt as f64, 0.0, 2.0, 0.0);
+        self.an.out = unruh_levels(ell as usize, dt, 10);
         self.an.out.as_ptr()
     }
 
     /// Espectro de entrelazamiento ε = ln((1 − ν)/ν) de la correlación del intervalo (los `count`
     /// de menor |ε|), para compararlo con 2π·ω del generador.
     pub fn unruh_entanglement_spectrum(&self, ell: u32, count: u32) -> Vec<f64> {
-        let ell = (ell as usize).clamp(4, 400);
+        let ell = (ell as usize).clamp(4, 300);
         let c = sea_correlation(ell, 0.0, 1.0, 0.0, 8192);
         let mut nu = linalg::hermitian_eigvals(c, 2 * ell);
         let mut eps: Vec<f64> = nu.iter_mut().map(|v| {
             let v = v.clamp(1e-15, 1.0 - 1e-15);
             ((1.0 - v) / v).ln()
         }).collect();
-        eps.sort_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap());
-        eps.truncate(count as usize);
+        eps.sort_by(|a, b| a.abs().total_cmp(&b.abs()));
+        eps.truncate((count as usize).min(2 * ell));
         eps
     }
 
@@ -452,8 +461,11 @@ impl QuantumSpacetimeUniverse {
     /// el de la caja periódica, con ⟨ρ⟩ = N/V restada en la fuente (autoconsistente), como el Poisson
     /// de red. Devuelve [N, borde, R½].
     pub fn seed_thomas_fermi(&mut self, rho0: f32) -> Vec<f64> {
-        let ga = (self.g as f64).abs().max(1e-12);
         let gamma = self.grav.gamma_eff() as f64;
+        if !rho0.is_finite() || rho0 <= 0.0 || !gamma.is_finite() || gamma <= 0.0 || !(self.e_max > 0.0 && self.e_max.is_finite()) {
+            return vec![f64::NAN; 3];
+        }
+        let ga = (self.g as f64).abs().max(1e-12);
         let vol = self.n as f64;
         let mut mean = 0.0;
         let (mut tr, mut trho, mut edge) = lane_emden(ga, gamma, rho0 as f64, self.e_max as f64, mean);
@@ -462,11 +474,14 @@ impl QuantumSpacetimeUniverse {
             (tr, trho, edge) = lane_emden(ga, gamma, rho0 as f64, self.e_max as f64, mean);
         }
         let n_tf = shell_mass(&tr, &trho);
-        let rh = {
+        let rh = if trho.len() >= 2 {
             let target = 0.5 * trho[0];
-            let i = trho.iter().position(|&v| v <= target).unwrap_or(1).max(1);
-            let t = (trho[i - 1] - target) / (trho[i - 1] - trho[i]);
+            let i = trho.iter().position(|&v| v <= target).unwrap_or(1).max(1).min(trho.len() - 1);
+            let d = trho[i - 1] - trho[i];
+            let t = if d.abs() > 1e-30 { (trho[i - 1] - target) / d } else { 0.0 };
             tr[i - 1] + t * (tr[i] - tr[i - 1])
+        } else {
+            f64::NAN
         };
         let nc = self.nc;
         let stride = self.stride();
@@ -476,12 +491,13 @@ impl QuantumSpacetimeUniverse {
             let (x, y, z) = self.coords(i);
             let (dx, dy, dz) = (x as f64 - cx, y as f64 - cy, if self.dim == 3 { z as f64 - cz } else { 0.0 });
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            let rho = if r >= rmax {
+            let rho = if tr.len() < 2 || r >= rmax {
                 0.0
             } else {
-                let j = tr.partition_point(|&v| v < r).max(1);
-                let t = (r - tr[j - 1]) / (tr[j] - tr[j - 1]);
-                trho[j - 1] + t * (trho[j] - trho[j - 1])
+                let j = tr.partition_point(|&v| v < r).max(1).min(tr.len() - 1);
+                let d = tr[j] - tr[j - 1];
+                let t = if d.abs() > 1e-30 { (r - tr[j - 1]) / d } else { 0.0 };
+                (trho[j - 1] + t * (trho[j] - trho[j - 1])).max(0.0)
             };
             let a = (rho / nc as f64).sqrt() as f32;
             for k in 0..nc {
@@ -516,7 +532,8 @@ impl QuantumSpacetimeUniverse {
         for b in 1..nb {
             if prof[b] <= 0.5 * rho0 {
                 let (r0, r1) = (b as f64 - 0.5, b as f64 + 0.5);
-                let t = (prof[b - 1] - 0.5 * rho0) / (prof[b - 1] - prof[b]);
+                let d = prof[b - 1] - prof[b];
+                let t = if d.abs() > 1e-30 { (prof[b - 1] - 0.5 * rho0) / d } else { 0.0 };
                 rh = r0 + t * (r1 - r0);
                 break;
             }

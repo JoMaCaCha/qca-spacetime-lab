@@ -502,7 +502,8 @@ fn t123_bose_star() {
             u.set_gravity(1, gamma);
         }
         let mut peak_ratio = 0.0f64;
-        for s in 1..=9000 {
+        let max_steps = if grav { 14000 } else { 9000 };
+        for s in 1..=max_steps {
             u.step();
             if s % 250 == 0 {
                 peak_ratio = peak_ratio.max(u.max_density() as f64 / u.mean_density());

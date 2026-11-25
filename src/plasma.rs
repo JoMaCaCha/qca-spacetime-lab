@@ -24,6 +24,9 @@ impl QuantumSpacetimeUniverse {
 
     /// ∂²ω/∂k_a² de la banda +1 en k = 0: 1/m\* del fondo de la banda (Dirac 3D).
     pub fn dirac_band_curvature(&self, axis: u32) -> f64 {
+        if !self.sw.active {
+            return f64::NAN;
+        }
         let h = 1e-3;
         let mut kp = [0.0; 3];
         kp[(axis as usize).min(2)] = h;
@@ -116,6 +119,10 @@ impl QuantumSpacetimeUniverse {
     /// Onda transversal: E_axis += amp·cos(2π·mode·x/W) en todos los enlaces de ese eje (axis ≠ 0:
     /// no tiene divergencia, así que la ley de Gauss no cambia).
     pub fn add_transverse_wave(&mut self, axis: u32, mode: u32, amp: f32) {
+        if !amp.is_finite() {
+            return;
+        }
+        self.ensure_em_buffers();
         let a = (axis as usize).clamp(1, self.dim - 1);
         let n = self.n;
         let k = 2.0 * PI * mode as f64 / self.w as f64;
@@ -126,6 +133,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Componente de Fourier Σ E_axis·cos(2π·mode·x/W)/N del campo (el modo de una onda transversal).
     pub fn field_mode_x(&self, axis: u32, mode: u32) -> f64 {
+        if self.em.e.is_empty() {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         let n = self.n;
         let k = 2.0 * PI * mode as f64 / self.w as f64;
@@ -138,6 +148,9 @@ impl QuantumSpacetimeUniverse {
 
     /// ⟨E_a⟩ sobre todos los enlaces del eje (el modo uniforme k = 0).
     pub fn field_mean(&self, axis: u32) -> f64 {
+        if self.em.e.is_empty() {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         let n = self.n;
         self.em.e[a * n..(a + 1) * n].iter().sum::<f64>() / n as f64
@@ -192,6 +205,9 @@ impl QuantumSpacetimeUniverse {
     /// Raíz de m + E(k) = ω_fotón(k) a lo largo de x (la resonancia de §3.16), por bisección en
     /// (0, π]; NaN si no hay cruce.
     pub fn dirac_photon_resonance_x(&self) -> f64 {
+        if !self.sw.active {
+            return f64::NAN;
+        }
         let m = self.sw_omega([0.0; 3]);
         let f = |k: f64| m + self.sw_omega([k, 0.0, 0.0]) - self.lattice_photon_omega(k as f32, 0.0, 0.0);
         let mut prev = (1e-3, f(1e-3));

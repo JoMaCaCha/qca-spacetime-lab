@@ -2,6 +2,8 @@
 //! (Bethe y carga central CFT de Calabrese–Cardy) y estudio del flujo RG de restauración de Lorentz
 //! en teorías de dos especies acopladas (Collins et al., 2004 frente a Chadha y Nielsen, 1983).
 
+use crate::linalg::complete_real_isometry;
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
@@ -93,16 +95,18 @@ fn real_svd_tall(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>
 
     let norms: Vec<f64> = (0..n).map(|j| cols[j].iter().map(|v| v * v).sum::<f64>().sqrt()).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&i, &j| norms[j].total_cmp(&norms[i]));
 
     let k = n;
     let mut u = vec![0.0; m * k];
     let mut s = vec![0.0; k];
     let mut vt = vec![0.0; k * n];
+    let mut rank = 0usize;
     for (idx, &col) in order.iter().enumerate() {
         let sig = norms[col];
         s[idx] = sig;
         if sig > 1e-15 {
+            rank += 1;
             let inv = 1.0 / sig;
             for i in 0..m {
                 u[i * k + idx] = cols[col][i] * inv;
@@ -111,6 +115,9 @@ fn real_svd_tall(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>
         for j in 0..n {
             vt[idx * n + j] = vcols[col][j];
         }
+    }
+    if rank < k {
+        complete_real_isometry(&mut u, m, k, rank);
     }
     (u, s, vt)
 }
@@ -486,6 +493,9 @@ impl RealMps {
     }
 
     pub fn entanglement_entropy(&self, cut: usize) -> f64 {
+        if self.bond_s.is_empty() {
+            return 0.0;
+        }
         let mut ent = 0.0;
         for &sv in &self.bond_s[cut.min(self.bond_s.len() - 1)] {
             let p = sv * sv;
@@ -621,6 +631,27 @@ fn update_right_env(
     out
 }
 
+/// Búferes temporales reutilizables para `apply_two_site_heff` (evita realocar en cada iteración de Lanczos).
+struct HeffScratch {
+    t1: Vec<f64>,
+    t2: Vec<f64>,
+    t3: Vec<f64>,
+}
+
+impl HeffScratch {
+    fn new() -> Self {
+        HeffScratch { t1: Vec::new(), t2: Vec::new(), t3: Vec::new() }
+    }
+
+    #[inline]
+    fn reset(buf: &mut Vec<f64>, len: usize) {
+        if buf.len() < len {
+            buf.resize(len, 0.0);
+        }
+        buf[..len].fill(0.0);
+    }
+}
+
 /// Aplica el hamiltoniano efectivo de dos sitios H_eff(site, site+1) sobre Θ(l, s0, s1, r) en O(D·χ³).
 #[allow(clippy::too_many_arguments)]
 fn apply_two_site_heff(
@@ -635,9 +666,11 @@ fn apply_two_site_heff(
     dw_r: usize,
     dl: usize,
     dr: usize,
+    scratch: &mut HeffScratch,
 ) {
     // Paso 1: T1[wl, lp, s0, s1, r] = Σ_l L[wl, lp, l] · Θ[l, s0, s1, r]
-    let mut t1 = vec![0.0; dw_l * dl * 4 * dr];
+    HeffScratch::reset(&mut scratch.t1, dw_l * dl * 4 * dr);
+    let t1 = &mut scratch.t1;
     for wl in 0..dw_l {
         for lp in 0..dl {
             let l_off = (wl * dl + lp) * dl;
@@ -655,7 +688,8 @@ fn apply_two_site_heff(
         }
     }
     // Paso 2: T2[wm, lp, s0', s1, r] = Σ_{wl, s0} W0[wl, wm, s0', s0] · T1[wl, lp, s0, s1, r]
-    let mut t2 = vec![0.0; dw_m * dl * 4 * dr];
+    HeffScratch::reset(&mut scratch.t2, dw_m * dl * 4 * dr);
+    let t2 = &mut scratch.t2;
     for &(wl, wm, s0p, s0, val) in w0 {
         for lp in 0..dl {
             let src_b = ((wl * dl + lp) * 2 + s0) * 2 * dr;
@@ -666,7 +700,8 @@ fn apply_two_site_heff(
         }
     }
     // Paso 3: T3[wr, lp, s0', s1', r] = Σ_{wm, s1} W1[wm, wr, s1', s1] · T2[wm, lp, s0', s1, r]
-    let mut t3 = vec![0.0; dw_r * dl * 4 * dr];
+    HeffScratch::reset(&mut scratch.t3, dw_r * dl * 4 * dr);
+    let t3 = &mut scratch.t3;
     for &(wm, wr, s1p, s1, val) in w1 {
         for lp in 0..dl {
             for s0p in 0..2 {
@@ -701,6 +736,7 @@ fn apply_two_site_heff(
 /// Ejecuta DMRG variacional de dos sitios (Lanczos) para un MPO disperso arbitrario.
 /// Devuelve `(energía_fundamental, mps_convergido)`.
 pub fn run_dmrg(mpo: &SparseMpo, chi_max: usize, sweeps: usize, seed: u64) -> (f64, RealMps) {
+    let chi_max = chi_max.max(1);
     let l = mpo.l;
     let dw = mpo.d_bond;
     let mut mps = RealMps::initial_neel_perturbed(l, seed);
@@ -716,9 +752,11 @@ pub fn run_dmrg(mpo: &SparseMpo, chi_max: usize, sweeps: usize, seed: u64) -> (f
     }
 
     let mut e_best = f64::INFINITY;
+    let mut heff_scratch = HeffScratch::new();
     let optimize_bond = |mps: &mut RealMps,
                          l_envs: &mut [Vec<f64>],
                          r_envs: &mut [Vec<f64>],
+                         scratch: &mut HeffScratch,
                          i: usize,
                          move_right: bool,
                          chi_cap: usize|
@@ -749,7 +787,7 @@ pub fn run_dmrg(mpo: &SparseMpo, chi_max: usize, sweeps: usize, seed: u64) -> (f
         let dw_m = dw_at(i + 1);
         let dw_r = dw_at(i + 2);
         let (e0, theta_opt) = lanczos_ground(dl * 4 * dr, &theta0, 14, |x, y| {
-            apply_two_site_heff(x, y, &l_envs[i], &r_envs[i + 2], &mpo.entries[i], &mpo.entries[i + 1], dw_l, dw_m, dw_r, dl, dr);
+            apply_two_site_heff(x, y, &l_envs[i], &r_envs[i + 2], &mpo.entries[i], &mpo.entries[i + 1], dw_l, dw_m, dw_r, dl, dr, scratch);
         });
         let rows = dl * 2;
         let cols = 2 * dr;
@@ -808,13 +846,13 @@ pub fn run_dmrg(mpo: &SparseMpo, chi_max: usize, sweeps: usize, seed: u64) -> (f
     for sw in 0..sweeps.max(1) {
         let chi_cap = if sw == 0 { (chi_max / 2).max(8).min(chi_max) } else { chi_max };
         for i in 0..(l - 1) {
-            let e = optimize_bond(&mut mps, &mut l_envs, &mut r_envs, i, true, chi_cap);
+            let e = optimize_bond(&mut mps, &mut l_envs, &mut r_envs, &mut heff_scratch, i, true, chi_cap);
             if e < e_best {
                 e_best = e;
             }
         }
         for i in (0..(l - 1)).rev() {
-            let e = optimize_bond(&mut mps, &mut l_envs, &mut r_envs, i, false, chi_cap);
+            let e = optimize_bond(&mut mps, &mut l_envs, &mut r_envs, &mut heff_scratch, i, false, chi_cap);
             if e < e_best {
                 e_best = e;
             }
@@ -1157,9 +1195,9 @@ impl QuantumSpacetimeUniverse {
     pub fn two_species_lorentz_rg_study(&mut self, n_rungs: u32, v_a: f32, v_b: f32, g_ab: f32, chi_max: u32) -> *const f64 {
         self.oq.out = run_two_species_lorentz_rg(
             n_rungs as usize,
-            (v_a as f64).clamp(0.2, 2.0),
-            (v_b as f64).clamp(0.2, 2.0),
-            (g_ab as f64).clamp(0.0, 3.0),
+            clamp_finite(v_a as f64, 0.2, 2.0, 1.0),
+            clamp_finite(v_b as f64, 0.2, 2.0, 0.5),
+            clamp_finite(g_ab as f64, 0.0, 3.0, 0.5),
             chi_max as usize,
         );
         self.oq.out.as_ptr()

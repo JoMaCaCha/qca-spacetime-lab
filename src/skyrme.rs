@@ -10,6 +10,7 @@
 //!   el momento de inercia de la cuantización de Adkins, Nappi y Witten (1983).
 //! Es una teoría efectiva de piones, no QCD; el campo de piones se pone a mano.
 
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
@@ -90,6 +91,9 @@ impl Skyrme {
         let n = self.n;
         let h = self.h;
         let np = n * n * n;
+        if n < 5 || psi.len() < 4 * np {
+            return 0.0;
+        }
         let phi: Vec<[f64; 4]> = (0..np)
             .map(|i| {
                 let p = &psi[4 * i..4 * i + 4];
@@ -160,6 +164,9 @@ impl Skyrme {
     /// B = (1/2π²)·Σ det[φ, ∂₁φ, ∂₂φ, ∂₃φ]·h³ con derivadas centradas de cuarto orden (error O(h⁴)).
     pub fn charge(&self) -> f64 {
         let n = self.n;
+        if n < 5 || self.psi.len() < 4 * n * n * n {
+            return 0.0;
+        }
         let h = self.h;
         let mut b = 0.0;
         for z in 2..n - 2 {
@@ -186,6 +193,10 @@ impl Skyrme {
     /// Densidad de energía por punto (media de las dos versiones), para dibujarla.
     pub fn refresh_density(&mut self) {
         let n = self.n;
+        if n < 5 || self.psi.len() < 4 * n * n * n {
+            self.dens.clear();
+            return;
+        }
         let h = self.h;
         let np = n * n * n;
         let mut dens = vec![0.0f32; np];
@@ -468,9 +479,13 @@ impl QuantumSpacetimeUniverse {
     /// alrededor de z (el canal atractivo, B = 2), perfil inicial tosco f = π·e^{−r/1,2}, en una malla
     /// cúbica de ±half_box con paso h. El vacío queda fijo en las dos capas del borde.
     pub fn skyrme_init(&mut self, baryons: u32, h: f32, half_box: f32) {
-        let h = (h as f64).max(0.05);
-        let half = (half_box as f64).max(1.0);
-        let n = (2.0 * half / h).round() as usize + 1;
+        let mut h = clamp_finite(h as f64, 0.05, 5.0, 0.15);
+        let half = clamp_finite(half_box as f64, 1.0, 20.0, 5.0);
+        let n_raw = (2.0 * half / h).round() as usize + 1;
+        let n = n_raw.clamp(5, 81);
+        if n != n_raw {
+            h = 2.0 * half / (n - 1) as f64;
+        }
         let mut sky = Skyrme::new();
         sky.n = n;
         sky.h = h;
@@ -530,9 +545,10 @@ impl QuantumSpacetimeUniverse {
     /// L-BFGS con la energía de diferencias hacia delante y hacia atrás (o centrada, para ver el
     /// desenrollado); devuelve E/(12π²·B).
     pub fn skyrme_relax(&mut self, iterations: u32) -> f64 {
-        if !self.sky.active {
+        if !self.sky.active || self.sky.n < 5 {
             return f64::NAN;
         }
+        let iterations = iterations.min(2000);
         let mut opt = match self.sky.lbfgs.take() {
             Some(o) => o,
             None => {
@@ -560,6 +576,9 @@ impl QuantumSpacetimeUniverse {
     /// dameros no cuestan energía y el solitón se desenrolla.
     pub fn skyrme_set_centered(&mut self, centered: bool) {
         self.sky.centered = centered;
+        if !self.sky.active || self.sky.n < 5 {
+            return;
+        }
         let mut g = vec![0.0; self.sky.psi.len()];
         let f = self.sky.energy_grad(&self.sky.psi, Some(&mut g));
         self.sky.energy = f;
@@ -568,7 +587,7 @@ impl QuantumSpacetimeUniverse {
 
     /// B = (1/2π²)∫det[φ, ∂₁φ, ∂₂φ, ∂₃φ] (derivadas centradas).
     pub fn skyrme_charge(&self) -> f64 {
-        if !self.sky.active {
+        if !self.sky.active || self.sky.n < 5 {
             return 0.0;
         }
         self.sky.charge()
@@ -583,7 +602,7 @@ impl QuantumSpacetimeUniverse {
     /// el centro, densidad máxima].
     pub fn skyrme_moments(&self) -> Vec<f64> {
         let s = &self.sky;
-        if !s.active {
+        if !s.active || s.n < 5 || s.dens.len() < s.n * s.n * s.n {
             return vec![0.0; 5];
         }
         let n = s.n;
@@ -603,7 +622,12 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let c = n / 2;
-        vec![m[0] / w, m[1] / w, m[2] / w, s.dens[(c * n + c) * n + c] as f64, dmax]
+        let center_d = s.dens[(c * n + c) * n + c] as f64;
+        if w > 1e-30 {
+            vec![m[0] / w, m[1] / w, m[2] / w, center_d, dmax]
+        } else {
+            vec![0.0, 0.0, 0.0, center_d, dmax]
+        }
     }
 
     /// Lado de la malla de Skyrme (puntos).

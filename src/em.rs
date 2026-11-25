@@ -83,23 +83,23 @@ impl EmField {
             substeps: 1,
             eta: 0.0,
             damp_outside: false,
-            a: vec![0.0; dim * n],
-            e: vec![0.0; dim * n],
-            j: vec![0.0; dim * n],
-            j_ext: vec![0.0; dim * n],
+            a: Vec::new(),
+            e: Vec::new(),
+            j: Vec::new(),
+            j_ext: Vec::new(),
             has_j_ext: false,
             j_ext_omega: 0.0,
             j_ext_ramp: 0,
-            rho_ext: vec![0.0; n],
+            rho_ext: Vec::new(),
             has_ext: false,
             uniform_e: [0.0; 3],
-            ph: vec![0.0; 2 * dim * n],
+            ph: Vec::new(),
             ph_valid: false,
             book_capacity: true,
-            absorb: vec![0.0; n],
+            absorb: Vec::new(),
             has_absorb: false,
-            energy_density: vec![0.0; n],
-            markers: Vec::with_capacity(64),
+            energy_density: Vec::new(),
+            markers: Vec::new(),
             fft: None,
             cbuf: Vec::new(),
             compact: false,
@@ -116,6 +116,37 @@ impl EmField {
 }
 
 impl QuantumSpacetimeUniverse {
+    /// Reserva de forma diferida los búferes del campo electromagnético U(1).
+    pub(crate) fn ensure_em_buffers(&mut self) {
+        let links = self.dim * self.n;
+        let n = self.n;
+        if self.em.a.len() != links {
+            self.em.a.resize(links, 0.0);
+        }
+        if self.em.e.len() != links {
+            self.em.e.resize(links, 0.0);
+        }
+        if self.em.j.len() != links {
+            self.em.j.resize(links, 0.0);
+        }
+        if self.em.j_ext.len() != links {
+            self.em.j_ext.resize(links, 0.0);
+        }
+        if self.em.rho_ext.len() != n {
+            self.em.rho_ext.resize(n, 0.0);
+        }
+        if self.em.ph.len() != 2 * links {
+            self.em.ph.resize(2 * links, 0.0);
+            self.em.ph_valid = false;
+        }
+        if self.em.absorb.len() != n {
+            self.em.absorb.resize(n, 0.0);
+        }
+        if self.em.energy_density.len() != n {
+            self.em.energy_density.resize(n, 0.0);
+        }
+    }
+
     /// Vecino r ± â (tabla precalculada).
     #[inline(always)]
     pub(crate) fn nb(&self, i: usize, axis: usize, dir: i32) -> usize {
@@ -138,10 +169,14 @@ impl QuantumSpacetimeUniverse {
     /// B_ab(r) de la plaqueta (a, b) con esquina en r.
     #[inline(always)]
     pub(crate) fn plaquette_b(&self, i: usize, a: usize, b: usize) -> f64 {
+        if self.em.a.len() < self.dim * self.n {
+            return 0.0;
+        }
         self.plaquette_b_from(&self.em.a, i, a, b)
     }
 
     pub(crate) fn em_refresh_phases(&mut self) {
+        self.ensure_em_buffers();
         let q = self.em.q;
         let links = self.dim * self.n;
         for l in 0..links {
@@ -239,6 +274,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Paso de la materia de Grover con U(1): corrientes, desplazamiento con fases.
     pub(crate) fn grover_u1_step<const NC: usize>(&mut self) {
+        self.ensure_em_buffers();
         if self.em.mode == 2 {
             self.grover_currents::<NC>();
         }
@@ -250,6 +286,10 @@ impl QuantumSpacetimeUniverse {
 
     /// Dinámica del campo tras el paso de la materia (y, con U(1) estático, el E uniforme externo).
     pub(crate) fn em_after_step(&mut self) {
+        if self.em.mode == 0 {
+            return;
+        }
+        self.ensure_em_buffers();
         let n = self.n;
         let dim = self.dim;
         match self.em.mode {
@@ -289,6 +329,7 @@ impl QuantumSpacetimeUniverse {
     /// Si el fotón oscuro U(1)_D está activo (Fase 14), evoluciona el hamiltoniano exacto acoplado
     /// con mezcla cinética ε y masa m_A', conservando exactamente la ley de Gauss visible.
     pub(crate) fn maxwell_substeps(&mut self) {
+        self.ensure_em_buffers();
         if self.em.dp_active {
             self.maxwell_dark_photon_substeps();
             return;
@@ -297,6 +338,8 @@ impl QuantumSpacetimeUniverse {
         let dim = self.dim;
         let s = self.em.substeps.max(1);
         let ks = self.em.kappa / s as f64;
+        let compact = self.em.compact && self.em.q.abs() >= 1e-15;
+        let q = self.em.q;
         let mut force = std::mem::take(&mut self.em.j); // la corriente ya se usó: búfer de trabajo
         for _ in 0..s {
             for a in 0..dim {
@@ -307,8 +350,7 @@ impl QuantumSpacetimeUniverse {
                             continue;
                         }
                         let im = self.nb(i, b, -1);
-                        let (b0, b1) = if self.em.compact {
-                            let q = self.em.q;
+                        let (b0, b1) = if compact {
                             ((q * self.plaquette_b(i, a, b)).sin() / q, (q * self.plaquette_b(im, a, b)).sin() / q)
                         } else {
                             (self.plaquette_b(i, a, b), self.plaquette_b(im, a, b))
@@ -421,6 +463,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Anota un reparto del tope como corriente en el enlace por el que pasa (§2.5).
     pub(crate) fn em_book(&mut self, from: usize, to: usize, axis: usize, dir: i32, amount: f64) {
+        self.ensure_em_buffers();
         let n = self.n;
         let q = self.em.q;
         if dir > 0 {
@@ -441,6 +484,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Resuelve −∇²_red φ = src (media nula) y suma −∇φ a E (diferencias hacia delante en los enlaces).
     pub(crate) fn em_add_gradient_field(&mut self, src: &[f64]) {
+        self.ensure_em_buffers();
         let n = self.n;
         let mut fft = self.em_fft();
         if self.em.cbuf.len() != n {
@@ -488,6 +532,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Inicializa E con la ley de Gauss de la materia (y de las cargas externas) y pone A = 0.
     pub(crate) fn em_init_gauss(&mut self) {
+        self.ensure_em_buffers();
         let n = self.n;
         for v in self.em.e.iter_mut() {
             *v = 0.0;
@@ -508,6 +553,9 @@ impl QuantumSpacetimeUniverse {
 
     pub(crate) fn em_gauss_residual(&self) -> f64 {
         let n = self.n;
+        if self.em.e.len() < self.dim * n || self.em.rho_ext.len() < n {
+            return 0.0;
+        }
         let q = self.em.q;
         let mut rho_mean = 0.0;
         let mut ext_mean = 0.0;
@@ -536,11 +584,15 @@ impl QuantumSpacetimeUniverse {
     /// §2.9: 0 = desactivado, 1 = estático (A fijo), 2 = dinámico (Maxwell). κ ≤ s²/dim (se limita).
     /// Al pasar a dinámico, E se inicializa con la ley de Gauss (FFT) y A = 0.
     pub fn set_em(&mut self, mode: u32, q: f32, kappa: f32) {
+        self.message.clear();
         if self.sm.active {
             // el modelo estándar fija su U(1)_Y (q = g′/2 para el Higgs, κ = 0,25): se configura con set_scenario_sm
             return;
         }
         let mode = mode.min(2);
+        if mode != 0 {
+            self.ensure_em_buffers();
+        }
         let q_old = self.em.q;
         if q.is_finite() {
             self.em.q = q as f64;
@@ -610,7 +662,10 @@ impl QuantumSpacetimeUniverse {
     /// Tubo de flujo Φ en la plaqueta (x, y) con su compensador −Φ en (x, y + H/2) y la cuerda de
     /// Dirac entre ellos (A_x = −Φ en los enlaces que la cruzan). En 3D, en todos los planos z.
     pub fn add_flux_tube(&mut self, x: i32, y: i32, flux: f32) {
-        let n = self.n;
+        if !flux.is_finite() || self.h < 2 {
+            return;
+        }
+        self.ensure_em_buffers();
         let x0 = crate::util::wrap_i(x, self.w);
         let y0 = crate::util::wrap_i(y, self.h);
         let q = if self.em.q != 0.0 { self.em.q } else { 1.0 };
@@ -622,19 +677,21 @@ impl QuantumSpacetimeUniverse {
                 self.em.a[i] += a_val;
             }
         }
-        let _ = n;
-        self.em.markers.push(x0 as f32 + 0.5);
-        self.em.markers.push(y0 as f32 + 0.5);
-        self.em.markers.push(1.0);
-        self.em.markers.push(x0 as f32 + 0.5);
-        self.em.markers.push(((y0 + self.h / 2) % self.h) as f32 + 0.5);
-        self.em.markers.push(-1.0);
+        if self.em.markers.len() + 6 <= 3 * 4096 {
+            self.em.markers.push(x0 as f32 + 0.5);
+            self.em.markers.push(y0 as f32 + 0.5);
+            self.em.markers.push(1.0);
+            self.em.markers.push(x0 as f32 + 0.5);
+            self.em.markers.push(((y0 + self.h / 2) % self.h) as f32 + 0.5);
+            self.em.markers.push(-1.0);
+        }
         self.em.ph_valid = false;
     }
 
     /// B uniforme con n cuantos de flujo: q·B = 2πn/(W·H) por plaqueta, gauge de Landau
     /// A_y = B·x más A_x = −B·W·y en la costura x = W − 1 → 0. En 3D, en cada plano z.
     pub fn set_uniform_magnetic_field(&mut self, n_flux: i32) {
+        self.ensure_em_buffers();
         let n = self.n;
         let (w, h) = (self.w, self.h);
         let q = if self.em.q != 0.0 { self.em.q } else { 1.0 };
@@ -662,9 +719,13 @@ impl QuantumSpacetimeUniverse {
     /// Suma un E uniforme (el modo k = 0). Dinámico: se suma a E. Estático: es un campo externo
     /// que hace crecer A como −E·t (fuerza constante sin reacción).
     pub fn set_uniform_electric_field(&mut self, ex: f32, ey: f32, ez: f32) {
+        if !(ex.is_finite() && ey.is_finite() && ez.is_finite()) {
+            return;
+        }
         let n = self.n;
         let v = [ex as f64, ey as f64, if self.dim == 3 { ez as f64 } else { 0.0 }];
         if self.em.mode == 2 {
+            self.ensure_em_buffers();
             for a in 0..self.dim {
                 for i in 0..n {
                     self.em.e[a * n + i] += v[a];
@@ -678,6 +739,10 @@ impl QuantumSpacetimeUniverse {
     /// Carga externa fija (gaussiana de σ = radius, total `charge`): un núcleo infinitamente
     /// pesado. Se suma −∇φ_ext a E y se guarda ρ_ext para el residuo de Gauss.
     pub fn add_static_charge(&mut self, x: i32, y: i32, z: i32, charge: f32, radius: f32) {
+        if !(charge.is_finite() && radius.is_finite()) {
+            return;
+        }
+        self.ensure_em_buffers();
         let n = self.n;
         let sigma = (radius as f64).max(0.3);
         let c = self.wrap_cell(x, y, z);
@@ -694,6 +759,9 @@ impl QuantumSpacetimeUniverse {
             src[i] = e;
             tot += e;
         }
+        if tot <= 0.0 {
+            return;
+        }
         let s = charge as f64 / tot;
         for v in src.iter_mut() {
             *v *= s;
@@ -703,9 +771,11 @@ impl QuantumSpacetimeUniverse {
         }
         self.em.has_ext = true;
         self.em_add_gradient_field(&src);
-        self.em.markers.push(cx as f32 + 0.5);
-        self.em.markers.push(cy as f32 + 0.5);
-        self.em.markers.push(if charge >= 0.0 { 2.0 } else { -2.0 });
+        if self.em.markers.len() + 3 <= 3 * 4096 {
+            self.em.markers.push(cx as f32 + 0.5);
+            self.em.markers.push(cy as f32 + 0.5);
+            self.em.markers.push(if charge >= 0.0 { 2.0 } else { -2.0 });
+        }
     }
 
     /// A = E = 0, sin cargas ni corrientes externas.
@@ -716,10 +786,19 @@ impl QuantumSpacetimeUniverse {
         for v in self.em.e.iter_mut() {
             *v = 0.0;
         }
+        for v in self.em.j.iter_mut() {
+            *v = 0.0;
+        }
         for v in self.em.rho_ext.iter_mut() {
             *v = 0.0;
         }
         for v in self.em.j_ext.iter_mut() {
+            *v = 0.0;
+        }
+        for v in self.em.dp_a.iter_mut() {
+            *v = 0.0;
+        }
+        for v in self.em.dp_e.iter_mut() {
             *v = 0.0;
         }
         self.em.has_ext = false;
@@ -727,8 +806,26 @@ impl QuantumSpacetimeUniverse {
         self.em.uniform_e = [0.0; 3];
         self.em.markers.clear();
         self.em.ph_valid = false;
-        // En modo dinámico, E = 0 con materia cargada violaría la ley de Gauss: se reinicializa.
-        if self.em.mode == 2 {
+        if self.ncol > 1 {
+            let nn = self.ym.n;
+            let m2 = 2 * nn * nn;
+            for l in 0..self.dim * self.n {
+                for k in 0..m2 {
+                    self.ym.u[l * m2 + k] = 0.0;
+                }
+                for i in 0..nn {
+                    self.ym.u[l * m2 + 2 * (i * nn + i)] = 1.0;
+                }
+            }
+            self.ym.e.iter_mut().for_each(|v| *v = 0.0);
+            self.ym.j.iter_mut().for_each(|v| *v = 0.0);
+            self.ym.rho_ext.iter_mut().for_each(|v| *v = 0.0);
+            self.ym.g_ref.iter_mut().for_each(|v| *v = 0.0);
+            if self.em.mode == 2 {
+                self.ym_init_gauss();
+            }
+        } else if self.em.mode == 2 {
+            // En modo dinámico, E = 0 con materia cargada violaría la ley de Gauss: se reinicializa.
             self.em_init_gauss();
         }
     }
@@ -755,8 +852,13 @@ impl QuantumSpacetimeUniverse {
             return self.ym_energy();
         }
         let n = self.n;
+        if self.em.a.len() < self.dim * n || self.em.e.len() < self.dim * n {
+            return 0.0;
+        }
         let s = self.em.substeps.max(1) as f64;
         let sync = self.em.mode == 2;
+        let q = self.em.q;
+        let compact = self.em.compact && q.abs() >= 1e-15;
         let mut e2 = 0.0;
         for a in 0..self.dim {
             for i in 0..n {
@@ -768,8 +870,7 @@ impl QuantumSpacetimeUniverse {
                             continue;
                         }
                         let im = self.nb(i, b, -1);
-                        f += if self.em.compact {
-                            let q = self.em.q;
+                        f += if compact {
                             ((q * self.plaquette_b(i, a, b)).sin() - (q * self.plaquette_b(im, a, b)).sin()) / q
                         } else {
                             self.plaquette_b(i, a, b) - self.plaquette_b(im, a, b)
@@ -782,12 +883,11 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let mut b2 = 0.0;
-        let q = self.em.q;
         for i in 0..n {
             for a in 0..self.dim {
                 for b in (a + 1)..self.dim {
                     let bb = self.plaquette_b(i, a, b);
-                    b2 += if self.em.compact { 2.0 * (1.0 - (q * bb).cos()) / (q * q) } else { bb * bb };
+                    b2 += if compact { 2.0 * (1.0 - (q * bb).cos()) / (q * q) } else { bb * bb };
                 }
             }
         }
@@ -811,6 +911,7 @@ impl QuantumSpacetimeUniverse {
             self.compute_colour_field_densities();
             return;
         }
+        self.ensure_em_buffers();
         let n = self.n;
         for i in 0..n {
             let mut s = 0.0;
@@ -833,10 +934,14 @@ impl QuantumSpacetimeUniverse {
 
     /// Transformación gauge aleatoria: χ = amplitude·ξ, ψ → e^{iqχ}ψ, A_a → A_a + χ(r+â) − χ(r).
     pub fn apply_random_gauge_transform(&mut self, amplitude: f32, seed: u32) {
+        if !amplitude.is_finite() {
+            return;
+        }
         if self.ncol > 1 {
             self.ym_random_gauge(amplitude, seed);
             return;
         }
+        self.ensure_em_buffers();
         let n = self.n;
         let mut rng = crate::rng::SplitMix64::new(seed as u64 ^ 0x6A06E);
         let chi: Vec<f64> = (0..n).map(|_| amplitude as f64 * rng.gauss()).collect();
@@ -869,15 +974,17 @@ impl QuantumSpacetimeUniverse {
             self.sw.psi = bufs.remove(0);
             self.sw.parts = bufs;
             self.sw_mirror();
-        }
-        let stride = self.stride();
-        for i in 0..n {
-            let (c, s) = ((q * chi[i]).cos(), (q * chi[i]).sin());
-            for k in 0..self.namp() {
-                let re = self.buffer_read[i * stride + 2 * k] as f64;
-                let im = self.buffer_read[i * stride + 2 * k + 1] as f64;
-                self.buffer_read[i * stride + 2 * k] = (re * c - im * s) as f32;
-                self.buffer_read[i * stride + 2 * k + 1] = (re * s + im * c) as f32;
+        } else {
+            let stride = self.stride();
+            let namp = self.namp();
+            for i in 0..n {
+                let (c, s) = ((q * chi[i]).cos(), (q * chi[i]).sin());
+                for k in 0..namp {
+                    let re = self.buffer_read[i * stride + 2 * k] as f64;
+                    let im = self.buffer_read[i * stride + 2 * k + 1] as f64;
+                    self.buffer_read[i * stride + 2 * k] = (re * c - im * s) as f32;
+                    self.buffer_read[i * stride + 2 * k + 1] = (re * s + im * c) as f32;
+                }
             }
         }
         for a in 0..self.dim {
@@ -891,6 +998,10 @@ impl QuantumSpacetimeUniverse {
 
     /// Corriente externa fija en un enlace (axis 0/1/2): se resta de E en cada paso, como q·J.
     pub fn add_static_current(&mut self, x: i32, y: i32, z: i32, axis: u32, current: f32) {
+        if !current.is_finite() {
+            return;
+        }
+        self.ensure_em_buffers();
         let a = (axis as usize).min(self.dim - 1);
         let i = self.wrap_cell(x, y, z);
         self.em.j_ext[a * self.n + i] += current as f64;
@@ -904,12 +1015,24 @@ impl QuantumSpacetimeUniverse {
 
     /// Hace oscilar las corrientes externas como sin(ωt) (antena dipolar); ω = 0 las deja fijas.
     pub fn set_current_oscillation(&mut self, omega: f32) {
-        self.em.j_ext_omega = omega as f64;
+        if omega.is_finite() {
+            self.em.j_ext_omega = omega as f64;
+        }
     }
 
     /// Capa absorbente de anchura `width` en los bordes del toro: E y A se multiplican por
     /// (1 − f) en cada subpaso, con f creciendo cuadráticamente hasta `strength`.
     pub fn set_absorbing_layer(&mut self, width: u32, strength: f32) {
+        if !strength.is_finite() {
+            return;
+        }
+        let strength = (strength as f64).clamp(0.0, 1.0);
+        if width == 0 || strength == 0.0 {
+            self.em.absorb.iter_mut().for_each(|v| *v = 0.0);
+            self.em.has_absorb = false;
+            return;
+        }
+        self.ensure_em_buffers();
         let wd = width as f64;
         for i in 0..self.n {
             let (x, y, z) = self.coords(i);
@@ -922,9 +1045,9 @@ impl QuantumSpacetimeUniverse {
                 let l = dims[a];
                 d = d.min(c as f64 + 0.5).min(l as f64 - c as f64 - 0.5);
             }
-            self.em.absorb[i] = if width > 0 && d < wd { (strength as f64 * ((wd - d) / wd).powi(2)) as f32 } else { 0.0 };
+            self.em.absorb[i] = if d < wd { (strength * ((wd - d) / wd).powi(2)) as f32 } else { 0.0 };
         }
-        self.em.has_absorb = width > 0 && strength > 0.0;
+        self.em.has_absorb = true;
     }
 
     /// B_ab de la plaqueta (a, b) en una celda (a, b ∈ 0..dim).
@@ -938,18 +1061,28 @@ impl QuantumSpacetimeUniverse {
 
     /// E_a en el enlace r → r + â.
     pub fn link_e(&self, x: i32, y: i32, z: i32, axis: u32) -> f64 {
+        if self.em.e.len() < self.dim * self.n {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         self.em.e[a * self.n + self.wrap_cell(x, y, z)]
     }
 
     /// A_a en el enlace r → r + â.
     pub fn link_a(&self, x: i32, y: i32, z: i32, axis: u32) -> f64 {
+        if self.em.a.len() < self.dim * self.n {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         self.em.a[a * self.n + self.wrap_cell(x, y, z)]
     }
 
     /// Fija A_a en un enlace (pulsos de fotones y montajes del laboratorio).
     pub fn set_link_a(&mut self, x: i32, y: i32, z: i32, axis: u32, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        self.ensure_em_buffers();
         let a = (axis as usize).min(self.dim - 1);
         let i = self.wrap_cell(x, y, z);
         self.em.a[a * self.n + i] = value;
@@ -958,6 +1091,10 @@ impl QuantumSpacetimeUniverse {
 
     /// Pulso gaussiano de A_axis(x) (σ = sigma, amplitud amp) centrado en x0, uniforme en y, z.
     pub fn add_photon_pulse(&mut self, x0: f32, sigma: f32, amp: f32, axis: u32) {
+        if !(x0.is_finite() && sigma.is_finite() && amp.is_finite()) || sigma <= 0.0 {
+            return;
+        }
+        self.ensure_em_buffers();
         let a = (axis as usize).min(self.dim - 1);
         let w = self.w as f64;
         for i in 0..self.n {
@@ -969,9 +1106,9 @@ impl QuantumSpacetimeUniverse {
     }
 
     /// Copia el estado del campo U(1) de otro universo con la misma malla (modo, q, κ, s, A, E,
-    /// cargas externas). Sirve para comparar dos evoluciones (invariancia gauge).
+    /// cargas/corrientes externas, capa absorbente y fotón oscuro). Sirve para comparar dos evoluciones.
     pub fn copy_em_from(&mut self, other: &QuantumSpacetimeUniverse) {
-        if other.n != self.n || other.dim != self.dim {
+        if (other.w, other.h, other.d) != (self.w, self.h, self.d) {
             return;
         }
         self.em.mode = other.em.mode;
@@ -979,12 +1116,36 @@ impl QuantumSpacetimeUniverse {
         self.em.kappa = other.em.kappa;
         self.em.substeps = other.em.substeps;
         self.em.eta = other.em.eta;
-        self.em.a.copy_from_slice(&other.em.a);
-        self.em.e.copy_from_slice(&other.em.e);
-        self.em.rho_ext.copy_from_slice(&other.em.rho_ext);
+        self.em.damp_outside = other.em.damp_outside;
+        self.em.book_capacity = other.em.book_capacity;
         self.em.has_ext = other.em.has_ext;
+        self.em.has_j_ext = other.em.has_j_ext;
+        self.em.j_ext_omega = other.em.j_ext_omega;
+        self.em.j_ext_ramp = other.em.j_ext_ramp;
+        self.em.has_absorb = other.em.has_absorb;
         self.em.uniform_e = other.em.uniform_e;
         self.em.compact = other.em.compact;
+        self.em.dp_active = other.em.dp_active;
+        self.em.dp_eps = other.em.dp_eps;
+        self.em.dp_mass = other.em.dp_mass;
+        self.em.dp_a = other.em.dp_a.clone();
+        self.em.dp_e = other.em.dp_e.clone();
+        self.em.dp_force = vec![0.0; other.em.dp_force.len()];
+        let links = self.dim * self.n;
+        if other.em.a.len() == links {
+            self.ensure_em_buffers();
+            self.em.a.copy_from_slice(&other.em.a);
+            self.em.e.copy_from_slice(&other.em.e);
+            self.em.rho_ext.copy_from_slice(&other.em.rho_ext);
+            self.em.j_ext.copy_from_slice(&other.em.j_ext);
+            self.em.absorb.copy_from_slice(&other.em.absorb);
+        } else {
+            self.em.a.iter_mut().for_each(|v| *v = 0.0);
+            self.em.e.iter_mut().for_each(|v| *v = 0.0);
+            self.em.rho_ext.iter_mut().for_each(|v| *v = 0.0);
+            self.em.j_ext.iter_mut().for_each(|v| *v = 0.0);
+            self.em.absorb.iter_mut().for_each(|v| *v = 0.0);
+        }
         self.em.ph_valid = false;
     }
 
@@ -1005,6 +1166,7 @@ impl QuantumSpacetimeUniverse {
         self.em.dp_mass = if mass.is_finite() { (mass as f64).max(0.0) } else { 0.0 };
         let links = self.dim * self.n;
         if on {
+            self.ensure_em_buffers();
             self.em.dp_a.resize(links, 0.0);
             self.em.dp_e.resize(links, 0.0);
             self.em.dp_force.resize(links, 0.0);
@@ -1018,6 +1180,9 @@ impl QuantumSpacetimeUniverse {
     pub fn dark_photon_energy(&self) -> Vec<f64> {
         let n = self.n;
         let dim = self.dim;
+        if self.em.a.len() < dim * n || self.em.e.len() < dim * n {
+            return vec![0.0; 5];
+        }
         let kap = self.em.kappa;
         if !self.em.dp_active {
             let mut ev = 0.0;
@@ -1033,6 +1198,9 @@ impl QuantumSpacetimeUniverse {
                 }
             }
             return vec![ev, ev, 0.0, 0.0, 0.0];
+        }
+        if self.em.dp_a.len() < dim * n || self.em.dp_e.len() < dim * n {
+            return vec![0.0; 5];
         }
         let eps = self.em.dp_eps;
         let inv = 1.0 / (1.0 - eps * eps);
@@ -1067,7 +1235,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Potencial vectorial oscuro A_D en el enlace r → r + â.
     pub fn dark_link_a(&self, x: i32, y: i32, z: i32, axis: u32) -> f64 {
-        if !self.em.dp_active {
+        if !self.em.dp_active || self.em.dp_a.len() < self.dim * self.n {
             return 0.0;
         }
         let a = (axis as usize).min(self.dim - 1);
@@ -1076,7 +1244,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Campo eléctrico oscuro E_D en el enlace r → r + â.
     pub fn dark_link_e(&self, x: i32, y: i32, z: i32, axis: u32) -> f64 {
-        if !self.em.dp_active {
+        if !self.em.dp_active || self.em.dp_e.len() < self.dim * self.n {
             return 0.0;
         }
         let a = (axis as usize).min(self.dim - 1);

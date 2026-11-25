@@ -6,7 +6,7 @@
 //! Unidades del problema radial: longitudes en ξ = 1/√(2m\*ρ̄f′) y tiempos en 1/(ρ̄f′), con
 //! φ = ψ/√ρ̄: i∂_τφ = −∇²φ + N(|φ|²)φ, N(s) = c₀·[f(ρ̄s) − f(ρ̄)], c₀ = (1 + ρ̄/E_max)²/ρ̄ (N′(1) = 1).
 
-use crate::util::{min_image, wrap_angle};
+use crate::util::{clamp_finite, min_image, wrap_angle};
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -66,7 +66,7 @@ impl Radial {
                 core * ((rw - r) / 2f64.sqrt()).tanh()
             })
             .collect();
-        let (mut a, mut b, mut c, mut d) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        let (mut a, mut b, mut c, mut d, mut x) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
         for _ in 0..60 {
             let mut res = 0.0f64;
             for i in 0..n {
@@ -83,13 +83,21 @@ impl Radial {
             }
             // Thomas
             for i in 1..n {
+                if b[i - 1].abs() < 1e-30 {
+                    return f;
+                }
                 let m = a[i] / b[i - 1];
                 b[i] -= m * c[i - 1];
                 d[i] -= m * d[i - 1];
             }
-            let mut x = vec![0.0; n];
+            if b[n - 1].abs() < 1e-30 {
+                return f;
+            }
             x[n - 1] = d[n - 1] / b[n - 1];
             for i in (0..n - 1).rev() {
+                if b[i].abs() < 1e-30 {
+                    return f;
+                }
                 x[i] = (d[i] - c[i] * x[i + 1]) / b[i];
             }
             for i in 0..n {
@@ -169,6 +177,9 @@ fn bdg_rate(rad: &Radial, f: &[f64], kappa: f64, ell: f64, dt: f64, steps: usize
     // LU en bandas sin pivoteo (A es diagonalmente dominante para dt pequeño)
     for r in 0..dim {
         let piv = amat[r][2];
+        if !piv.re.is_finite() || !piv.im.is_finite() || piv.norm_sqr() < 1e-30 {
+            return 0.0;
+        }
         for dr in 1..=2 {
             let rr = r + dr;
             if rr >= dim {
@@ -225,22 +236,34 @@ fn bdg_rate(rad: &Radial, f: &[f64], kappa: f64, ell: f64, dt: f64, steps: usize
                     v -= amat[r][2 + c] * rhs[r + c];
                 }
             }
-            rhs[r] = v / amat[r][2];
+            let piv = amat[r][2];
+            if piv.norm_sqr() < 1e-30 {
+                return 0.0;
+            }
+            rhs[r] = v / piv;
         }
         if s == steps {
             let num: C = psi.iter().zip(&rhs).map(|(a, b)| a.conj() * b).sum();
             let den: f64 = psi.iter().map(|a| a.norm_sqr()).sum();
-            last_ratio = num / den;
+            if den > 1e-30 && den.is_finite() {
+                last_ratio = num / den;
+            }
         }
         std::mem::swap(&mut psi, &mut rhs);
         if s % 10 == 0 {
             let nn: f64 = psi.iter().map(|a| a.norm_sqr()).sum::<f64>().sqrt();
+            if !nn.is_finite() || nn <= 1e-30 {
+                return 0.0;
+            }
             acc += nn.ln();
             logn.push((s as f64 * dt, acc));
             for a in psi.iter_mut() {
                 *a /= nn;
             }
         }
+    }
+    if logn.len() < 4 {
+        return 0.0;
     }
     let tail = &logn[logn.len() / 2..];
     let xs: Vec<f64> = tail.iter().map(|p| p.0).collect();
@@ -249,9 +272,12 @@ fn bdg_rate(rad: &Radial, f: &[f64], kappa: f64, ell: f64, dt: f64, steps: usize
     if slope > 2e-3 {
         // ω = (2i/dt)·(λ − 1)/(λ + 1) con λ el cociente de Rayleigh del último paso
         let one = C::new(1.0, 0.0);
-        let w = C::new(0.0, 2.0 / dt) * (last_ratio - one) / (last_ratio + one);
-        if (w.im - slope).abs() < 0.2 * slope {
-            return w.im;
+        let denom = last_ratio + one;
+        if denom.norm_sqr() > 1e-30 {
+            let w = C::new(0.0, 2.0 / dt) * (last_ratio - one) / denom;
+            if w.im.is_finite() && (w.im - slope).abs() < 0.2 * slope {
+                return w.im;
+            }
         }
     }
     slope.max(0.0)
@@ -288,6 +314,9 @@ fn wall_profile(rd_over_xi: f64, emax: f64) -> (f64, Vec<f64>) {
 }
 
 fn table_at(h: f64, tab: &[f64], r: f64) -> f64 {
+    if tab.is_empty() || !r.is_finite() || !h.is_finite() || h <= 0.0 {
+        return 1.0;
+    }
     let x = r / h - 0.5;
     if x <= 0.0 {
         return tab[0] * (r / (0.5 * h)).min(1.0);
@@ -304,7 +333,11 @@ impl QuantumSpacetimeUniverse {
     /// ξ con la densidad del fondo ρ̄ (no la media de la malla, que incluye muros y núcleos).
     pub(crate) fn analog_xi(&self) -> f64 {
         let rho = self.vort.rho_bg.max(1e-6) as f64;
-        1.0 / (2.0 * self.band_mass() * rho * self.nonlinear_slope(rho)).sqrt()
+        let denom = 2.0 * self.band_mass() * rho * self.nonlinear_slope(rho);
+        if !denom.is_finite() || denom <= 1e-18 {
+            return 1.0;
+        }
+        1.0 / denom.sqrt()
     }
 
     /// Multiplica la fase del campo por el perfil F_|q|(r/ξ) del vórtice libre y e^{iqθ} (θ con las
@@ -402,9 +435,10 @@ impl QuantumSpacetimeUniverse {
         if !(cx.is_finite() && cy.is_finite() && radius.is_finite()) || radius <= 1.0 {
             return;
         }
-        let (cx, cy, rad) = (cx as f64, cy as f64, radius as f64);
-        let xi = self.analog_xi();
-        let (h, tab) = wall_profile(rad / xi, self.e_max as f64);
+        let max_rad = (self.w.max(self.h) as f64 * 2.0).max(2.0);
+        let (cx, cy, rad) = (cx as f64, cy as f64, (radius as f64).min(max_rad));
+        let xi = self.analog_xi().max(1e-3);
+        let (h, tab) = wall_profile((rad / xi).clamp(1.0, 200.0), self.e_max as f64);
         let stride = self.stride();
         for i in 0..self.n {
             let (x, y, _) = self.coords(i);
@@ -430,7 +464,8 @@ impl QuantumSpacetimeUniverse {
     /// de E dentro del disco.
     pub fn vortex_multipole(&self, l: u32, radius: f32) -> f64 {
         let (cx, cy, rd) = self.an.disk.unwrap_or((self.w as f64 / 2.0 - 0.5, self.h as f64 / 2.0 - 0.5, f64::INFINITY));
-        let r2s = (radius as f64).powi(2).max(1e-9);
+        let rad = clamp_finite(radius as f64, 1e-4, 1e6, 1.0);
+        let r2s = (rad * rad).max(1e-9);
         let mut eref = 0.0f64;
         for i in 0..self.n {
             if self.has_walls && self.wall[i] != 0 {
@@ -458,6 +493,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Semilla multipolar: ψ ← ψ·(1 + amplitude·cos(lθ)·e^{−r²/(2ξ)²}) alrededor del centro del disco.
     pub fn seed_disk_multipole(&mut self, l: u32, amplitude: f32) {
+        let amp = clamp_finite(amplitude as f64, -10.0, 10.0, 0.0);
         let (cx, cy, _) = self.an.disk.unwrap_or((self.w as f64 / 2.0 - 0.5, self.h as f64 / 2.0 - 0.5, f64::INFINITY));
         let xi = self.analog_xi();
         let stride = self.stride();
@@ -466,7 +502,7 @@ impl QuantumSpacetimeUniverse {
             let (dx, dy) = (x as f64 - cx, y as f64 - cy);
             let r2 = dx * dx + dy * dy;
             let th = dy.atan2(dx);
-            let f = (1.0 + amplitude as f64 * (l as f64 * th).cos() * (-r2 / (4.0 * xi * xi)).exp()) as f32;
+            let f = (1.0 + amp * (l as f64 * th).cos() * (-r2 / (4.0 * xi * xi)).exp()) as f32;
             for k in 0..stride {
                 self.buffer_read[i * stride + k] *= f;
             }
@@ -476,7 +512,8 @@ impl QuantumSpacetimeUniverse {
     /// §2.28: [r_e/ξ, Im ω/(ρ̄f′)] con ρ̄ = 0,5: perfil por Newton radial y Crank–Nicolson como
     /// iteración de potencia (paso 0,25/(ρ̄f′)).
     pub fn vortex_radial_bdg(&mut self, charge: u32, rd_over_xi: f32, l: u32) -> *const f64 {
-        let (re, rate) = radial_bdg(charge.clamp(1, 4), (rd_over_xi as f64).clamp(2.0, 40.0), l.max(1), self.e_max as f64);
+        let rd = clamp_finite(rd_over_xi as f64, 2.0, 40.0, 10.0);
+        let (re, rate) = radial_bdg(charge.clamp(1, 4), rd, l.clamp(1, 64), self.e_max as f64);
         self.an.out = vec![re, rate];
         self.an.out.as_ptr()
     }

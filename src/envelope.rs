@@ -30,7 +30,7 @@ const NT: usize = 60;
 fn solve(mut g: Vec<f64>, mut h: Vec<f64>) -> Option<Vec<f64>> {
     let n = h.len();
     for c in 0..n {
-        let p = (c..n).max_by(|&a, &b| g[a * n + c].abs().partial_cmp(&g[b * n + c].abs()).unwrap())?;
+        let p = (c..n).max_by(|&a, &b| g[a * n + c].abs().total_cmp(&g[b * n + c].abs()))?;
         if g[p * n + c].abs() < 1e-300 {
             return None;
         }
@@ -247,7 +247,7 @@ pub(crate) fn discover_cfg(m: f64, g: f64, emax: f64, alpha: f64, rho_bar: f64, 
         }
     }
     let lin: f64 = (0..N_TERMS).map(|k| x[k] * hv[k]).sum();
-    let res = ((quad - 2.0 * lin + bb).max(0.0) / bb).sqrt();
+    let res = if bb > 1e-30 { ((quad - 2.0 * lin + bb).max(0.0) / bb).sqrt() } else { 0.0 };
     let mstar = if x[2] != 0.0 { -1.0 / (2.0 * x[2]) } else { f64::NAN };
     let emax_fit = if x[6] != 0.0 { -x[5] / x[6] } else { f64::NAN };
     let mut out = x;

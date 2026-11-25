@@ -10,6 +10,7 @@
 
 use crate::linalg::{self, C};
 use crate::rng::SplitMix64;
+use crate::util::{clamp_finite, wrap_angle};
 use crate::QuantumSpacetimeUniverse;
 use rustfft::{Fft, FftPlanner};
 use std::f64::consts::PI;
@@ -73,7 +74,11 @@ pub(crate) fn track_band(m: f64, dim: u32, path: &[f64]) -> Vec<(Vec<C>, C)> {
     let mut k_prev = 0.0f64;
     let mut out = Vec::with_capacity(path.len());
     for &k in path {
-        let nsub = (((k - k_prev).abs() / 0.01).ceil() as usize).max(1);
+        if !k.is_finite() {
+            out.push((v.clone(), lam));
+            continue;
+        }
+        let nsub = (((k - k_prev).abs() / 0.01).ceil() as usize).clamp(1, 10_000);
         if k != k_prev {
             for s in 1..=nsub {
                 let kk = k_prev + (k - k_prev) * s as f64 / nsub as f64;
@@ -169,14 +174,22 @@ pub(crate) fn parametric_rate_impl(m: f64, g: f64, rho: f64, emax: f64, dim: u32
 /// sin el bloque de Goldstone j = 0).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parametric_rate_grid(m: f64, g: f64, rho: f64, emax: f64, dim: u32, nq: usize, k0: f64, offset: f64) -> (f64, [f64; 3]) {
+    if !m.is_finite() || !g.is_finite() || !rho.is_finite() || !emax.is_finite() || !k0.is_finite() || !offset.is_finite() || rho <= 0.0 || emax <= 0.0 {
+        return (0.0, [0.0; 3]);
+    }
     let dim = dim.clamp(1, 3);
+    let k0 = wrap_angle(k0);
     let nc = if dim == 3 { 6 } else { 4 };
     let coin = coin_matrix(m, nc);
     let (u1, lam) = focusing_band(m, dim, k0);
     let u: Vec<C> = u1.iter().map(|c| c * rho.sqrt()).collect();
     let w0 = -lam.arg();
     let th = g / (1.0 + rho / emax).powi(2);
-    let nq = nq.max(2);
+    let nq = match dim {
+        1 => nq.clamp(2, 65_536),
+        2 => nq.clamp(2, 2048),
+        _ => nq.clamp(2, 128),
+    };
     let half = nq.div_ceil(2);
     let qv = |j: usize| 2.0 * PI * (j as f64 + offset) / nq as f64;
     let mut best = (0.0f64, [0.0f64; 3]);
@@ -499,7 +512,7 @@ impl Strip {
         let mut a: Vec<C> = (0..w).map(|_| C::new(rng.gauss(), rng.gauss())).collect();
         let mut b: Vec<C> = (0..w).map(|_| C::new(rng.gauss(), rng.gauss())).collect();
         let inv_w = 1.0 / w as f64;
-        let steps = steps.max(200) as usize;
+        let steps = steps.clamp(200, 200_000) as usize;
         let mut log_sum = 0.0;
         let mut counted = 0usize;
         let mut since = 0usize;
@@ -520,6 +533,9 @@ impl Strip {
             since += 1;
             if s % 100 == 0 || s == steps {
                 let nn = (a.iter().chain(b.iter()).map(|c| c.norm_sqr()).sum::<f64>()).sqrt();
+                if !(nn > 1e-300 && nn.is_finite()) {
+                    return 0.0;
+                }
                 if s > steps / 2 {
                     log_sum += nn.ln();
                     counted += since;
@@ -928,25 +944,34 @@ impl QuantumSpacetimeUniverse {
     /// [tasa, q_x, q_y, q_z, tasa/(c_s/ξ)] con c_s/ξ = √2·ρ̄f′ (independiente de m\*).
     pub fn parametric_resonance(&self, m: f32, g: f32, rho: f32, dim: u32, nq: u32, k0: f32) -> Vec<f64> {
         let (r, q) = parametric_rate_impl(m as f64, g as f64, rho as f64, self.e_max as f64, dim, nq as usize, k0 as f64);
-        let rf = rho as f64 * (g as f64).abs() / (1.0 + rho as f64 / self.e_max as f64).powi(2);
-        vec![r, q[0], q[1], q[2], r / (2f64.sqrt() * rf)]
+        let rf = if rho.is_finite() && g.is_finite() && rho > 0.0 && self.e_max > 0.0 {
+            rho as f64 * (g as f64).abs() / (1.0 + rho as f64 / self.e_max as f64).powi(2)
+        } else {
+            0.0
+        };
+        let ratio = if rf > 1e-30 { r / (2f64.sqrt() * rf) } else { 0.0 };
+        vec![r, q[0], q[1], q[2], ratio]
     }
 
     /// §2.28 (escenario 10): tira W × 1, onda plana de la banda en k₀ = 2πn/W con ρ̄ = 0,5, g(x)
     /// con bordes tanh de anchura 2 y V(x) = (g(x) − g_sub)·f(ρ̄). La región supersónica, de longitud
     /// `length`, está centrada en la tira.
     pub fn acoustic_strip_init(&mut self, width: u32, n_flow: u32, g_sub: f32, g_super: f32, length: f32, mass: f32) {
-        let w = (width as usize).clamp(16, 1 << 16);
-        let mass = if mass.is_finite() { mass.clamp(0.05, 1.55) } else { 1.4 };
-        let st = Strip::new(w, n_flow % w as u32, g_sub as f64, g_super as f64, length.max(0.0) as f64, mass as f64, self.e_max as f64);
+        let w = (width as usize).clamp(16, 16_384);
+        let mass = clamp_finite(mass as f64, 0.05, 1.55, 1.4) as f32;
+        let g_sub_f = clamp_finite(g_sub as f64, -10.0, 10.0, -0.02);
+        let g_super_f = clamp_finite(g_super as f64, -10.0, 10.0, -0.0025);
+        let len_f = clamp_finite(length as f64, 0.0, w as f64, 0.0);
+        let emax = clamp_finite(self.e_max as f64, 1e-6, 1e12, 1.0);
+        let st = Strip::new(w, n_flow % w as u32, g_sub_f, g_super_f, len_f, mass as f64, emax);
         let (v, cs, csp) = (st.vg, st.sound(st.g_sub), st.sound(st.g_super));
-        if csp > v.abs() && length > 0.0 {
+        if csp > v.abs() && len_f > 0.0 {
             self.set_message(&format!("La región central no es supersónica: v = {:.4} y c_s = {:.4}.", v, csp));
         } else if cs < v.abs() {
             self.set_message(&format!("La región exterior ya es supersónica: v = {:.4} y c_s = {:.4}.", v, cs));
         }
         self.set_mass(mass);
-        self.g = g_sub;
+        self.g = g_sub_f as f32;
         self.an.strip = Some(st);
         self.an.job = None;
         self.t = 0;
@@ -954,6 +979,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Avanza la tira n pasos sin pasar por `step` (para los cálculos por lotes en otro universo).
     pub fn strip_step(&mut self, n: u32) {
+        let n = n.min(100_000);
         if let Some(st) = self.an.strip.as_mut() {
             for _ in 0..n {
                 st.step();
@@ -968,15 +994,17 @@ impl QuantumSpacetimeUniverse {
 
     /// Ruido complejo gaussiano de amplitud relativa `amplitude` en los cuatro canales de la tira.
     pub fn strip_add_noise(&mut self, amplitude: f32, seed: u32) {
+        let amp = clamp_finite(amplitude as f64, 0.0, 10.0, 0.0);
         if let Some(st) = self.an.strip.as_mut() {
-            st.add_noise(amplitude.max(0.0) as f64, seed as u64);
+            st.add_noise(amp, seed as u64);
         }
     }
 
     /// Activa la cascada espacio-tiempo de la tira: `rows` filas, una cada `every` pasos.
     pub fn strip_history(&mut self, rows: u32, every: u32) {
         if let Some(st) = self.an.strip.as_mut() {
-            st.hist_rows = rows.min(4096) as usize;
+            let max_rows = (8_388_608 / st.w.max(1)).min(4096);
+            st.hist_rows = (rows as usize).min(max_rows);
             st.hist_every = every.max(1);
             st.hist = vec![0.0; st.hist_rows * st.w];
         }
@@ -1052,7 +1080,10 @@ impl QuantumSpacetimeUniverse {
             self.set_message("Hawking por lotes: primero acoustic_strip_init.");
             return false;
         };
-        self.an.job = Some(HawkingJob::new(st, engine.min(1), ramp, t, row_stride.max(1) as usize));
+        let t = t.min(50_000);
+        let min_stride = st.w.div_ceil(1024).max(1);
+        let stride = (row_stride.max(1) as usize).max(min_stride);
+        self.an.job = Some(HawkingJob::new(st, engine.min(1), ramp, t, stride));
         true
     }
 
@@ -1093,7 +1124,10 @@ impl QuantumSpacetimeUniverse {
             return Vec::new();
         };
         let nm = self.an.map_n;
-        if nm == 0 || !job.done() {
+        if nm == 0 || !job.done() || self.an.map.len() < nm * nm {
+            return Vec::new();
+        }
+        if !v_up.is_finite() || !vd_min.is_finite() || !vd_max.is_finite() || !dvd.is_finite() || dvd <= 0.0 || vd_max < vd_min {
             return Vec::new();
         }
         let stride = if job.rows.len() > 1 { (job.rows[1] - job.rows[0]) as f64 } else { 1.0 };
@@ -1105,20 +1139,23 @@ impl QuantumSpacetimeUniverse {
         let at = |x: f64, y: f64| -> f64 {
             // bilineal en la rejilla de filas calculadas
             let (u, v) = (x / stride, y / stride);
-            let (i0, j0) = (u.floor() as usize, v.floor() as usize);
-            let (fu, fv) = (u - i0 as f64, v - j0 as f64);
+            let i0 = (u.floor().max(0.0) as usize).min(nm - 1);
+            let j0 = (v.floor().max(0.0) as usize).min(nm - 1);
+            let fu = (u - i0 as f64).clamp(0.0, 1.0);
+            let fv = (v - j0 as f64).clamp(0.0, 1.0);
             let (i1, j1) = ((i0 + 1).min(nm - 1), (j0 + 1).min(nm - 1));
             map[i0 * nm + j0] * (1.0 - fu) * (1.0 - fv) + map[i1 * nm + j0] * fu * (1.0 - fv) + map[i0 * nm + j1] * (1.0 - fu) * fv + map[i1 * nm + j1] * fu * fv
         };
         let mut out = vec![f64::NAN, f64::INFINITY, xh, th];
-        let nv = ((vd_max - vd_min) / dvd.max(1e-9)).round() as usize;
+        let nv = (((vd_max - vd_min) / dvd.max(1e-9)).round() as usize).min(10_000);
+        let wmax = (st.w - 1) as f64;
         for k in 0..=nv {
             let vd = vd_min + k as f64 * dvd;
             let (mut sum, mut cnt) = (0.0, 0usize);
             let mut s = 0.0;
             while s < smax {
                 let (x, xp) = (xh - v_up * s, xh + vd * s);
-                if xp - x >= dmin && x >= 0.0 && xp <= (st.w - 1) as f64 {
+                if xp - x >= dmin && x >= 0.0 && x <= wmax && xp >= 0.0 && xp <= wmax {
                     sum += at(x, xp);
                     cnt += 1;
                 }
@@ -1158,13 +1195,23 @@ impl QuantumSpacetimeUniverse {
     /// 2 = vórtice de carga 2 en un disco (2D, m = 1,4, ξ = 8, R = 76, semilla cuadrupolar de 10⁻³),
     /// 3 = reconexión de anillos (3D, m = 0,5, g = −0,03, R = 20), 4 = Unruh de fermiones (sin malla).
     pub fn set_analog_setup(&mut self, setup: u32) {
+        self.message.clear();
         if self.scenario != 10 {
             self.set_message("Los montajes de gravedad análoga son del escenario 10.");
             return;
         }
+        let setup = setup.min(4);
+        if setup == 2 && self.dim != 2 {
+            self.set_message("El vórtice en un disco es 2D: cambia a una malla 2D (160² o mayor).");
+            return;
+        }
+        if setup == 3 && self.dim != 3 {
+            self.set_message("La reconexión de anillos es 3D: cambia a una malla 3D (96³).");
+            return;
+        }
         self.clear_barriers();
         self.an = Analog::new();
-        self.an.setup = setup.min(4);
+        self.an.setup = setup;
         self.clear();
         self.e_max = 1.0;
         self.alpha = 0.0;
@@ -1180,10 +1227,6 @@ impl QuantumSpacetimeUniverse {
                 self.acoustic_strip_init(512, 7, -0.01, -0.01 / 16.0, 240.0, 1.35);
             }
             2 => {
-                if self.dim != 2 {
-                    self.set_message("El vórtice en un disco es 2D: cambia a una malla 2D (160² o mayor).");
-                    return;
-                }
                 self.set_mass(1.4);
                 self.g = -0.00303;
                 self.seed_uniform_background(0.5, 0.0, 1);
@@ -1194,10 +1237,6 @@ impl QuantumSpacetimeUniverse {
                 self.seed_disk_multipole(2, 1e-3);
             }
             3 => {
-                if self.dim != 3 {
-                    self.set_message("La reconexión de anillos es 3D: cambia a una malla 3D (96³).");
-                    return;
-                }
                 self.set_mass(0.5);
                 self.g = -0.03;
                 self.seed_uniform_background(0.5, 0.0, 1);
@@ -1224,8 +1263,14 @@ impl QuantumSpacetimeUniverse {
         let ms = self.band_mass();
         let fp = self.nonlinear_slope(rho);
         let dim = if self.dim == 3 { 3 } else { 2 };
-        let pr = if nq == 0 { f64::NAN } else { parametric_rate_impl(self.mass as f64, self.g as f64, rho, self.e_max as f64, dim, nq as usize, 0.0).0 };
-        vec![self.mass as f64, ms, self.g as f64, rho, self.analog_xi(), (rho * fp / ms).sqrt(), 2.0 * PI / ms, pr]
+        let pr = if nq == 0 || !(rho > 0.0 && rho.is_finite()) {
+            f64::NAN
+        } else {
+            parametric_rate_impl(self.mass as f64, self.g as f64, rho, self.e_max as f64, dim, nq as usize, 0.0).0
+        };
+        let cs = if rho > 0.0 && ms > 1e-30 && fp >= 0.0 { (rho * fp / ms).sqrt() } else { f64::NAN };
+        let circ = if ms > 1e-30 { 2.0 * PI / ms } else { f64::NAN };
+        vec![self.mass as f64, ms, self.g as f64, rho, self.analog_xi(), cs, circ, pr]
     }
 
     /// Fase 14 (Micheli, Oshima y Takahashi, PRD 2026): evolución gaussiana de dos modos (k, −k)
@@ -1236,12 +1281,12 @@ impl QuantumSpacetimeUniverse {
     #[allow(clippy::too_many_arguments)]
     pub fn gaussian_desqueezing_run(&mut self, omega: f32, lambda_sq: f32, gamma_damp: f32, n_th: f32, gamma_diff: f32, t_max: f32, steps: u32) -> *const f64 {
         let res = gaussian_two_mode_evolve(
-            omega as f64,
-            lambda_sq as f64,
-            (gamma_damp as f64).max(0.0),
-            (n_th as f64).max(0.0),
-            (gamma_diff as f64).max(0.0),
-            (t_max as f64).clamp(0.05, 50.0),
+            clamp_finite(omega as f64, -1e3, 1e3, 0.0),
+            clamp_finite(lambda_sq as f64, -10.0, 10.0, 0.5),
+            clamp_finite(gamma_damp as f64, 0.0, 1e3, 0.0),
+            clamp_finite(n_th as f64, 0.0, 1e6, 0.0),
+            clamp_finite(gamma_diff as f64, 0.0, 1e3, 0.0),
+            clamp_finite(t_max as f64, 0.05, 50.0, 2.0),
             (steps as usize).clamp(20, 4000),
         );
         self.an.out = res;
@@ -1254,11 +1299,11 @@ impl QuantumSpacetimeUniverse {
     ///   B: compresión más débil / des-comprimido `lambda_b` + difusión de cuadratura → separable.
     /// Devuelve [γ_A, r_A, ν̃_−A, E_NA, γ_B, r_B, ν̃_−B, E_NB, γ_diff_B].
     pub fn gaussian_same_purity_comparison(&self, lambda_a: f32, lambda_b: f32, gamma_a: f32, n_th: f32, t_max: f32) -> Vec<f64> {
-        let la = (lambda_a as f64).max(0.05);
-        let lb = (lambda_b as f64).max(0.0);
-        let ga = (gamma_a as f64).max(1e-4);
-        let nt = (n_th as f64).max(0.0);
-        let tm = (t_max as f64).clamp(0.2, 20.0);
+        let la = clamp_finite(lambda_a as f64, 0.05, 10.0, 1.0);
+        let lb = clamp_finite(lambda_b as f64, 0.0, 10.0, 0.2);
+        let ga = clamp_finite(gamma_a as f64, 1e-4, 1e3, 0.1);
+        let nt = clamp_finite(n_th as f64, 0.0, 1e6, 0.0);
+        let tm = clamp_finite(t_max as f64, 0.2, 20.0, 2.0);
         let steps = 400usize;
         let sig_a = gaussian_two_mode_final(0.0, la, ga, nt, 0.0, tm, steps);
         let inv_a = gaussian_invariants(&sig_a);
@@ -1287,9 +1332,9 @@ impl QuantumSpacetimeUniverse {
     /// transmitancia `eta` ∈ (0, 1] y ocupación térmica `n_th`.
     /// Devuelve [pureza, r_eff, nu_menos, nu_tilde_menos, E_N].
     pub fn analog_bogoliubov_entanglement(&self, r_sq: f32, eta: f32, n_th: f32) -> Vec<f64> {
-        let r = (r_sq as f64).clamp(0.0, 8.0);
-        let et = (eta as f64).clamp(1e-6, 1.0);
-        let nt = (n_th as f64).max(0.0);
+        let r = clamp_finite(r_sq as f64, 0.0, 8.0, 0.5);
+        let et = clamp_finite(eta as f64, 1e-6, 1.0, 1.0);
+        let nt = clamp_finite(n_th as f64, 0.0, 1e6, 0.0);
         let ch = (2.0 * r).cosh();
         let sh = (2.0 * r).sinh();
         let a = 0.5 * et * ch + (1.0 - et) * (nt + 0.5);
@@ -1350,7 +1395,7 @@ fn sym4_eigvals(mut a: [f64; 16]) -> [f64; 4] {
         }
     }
     let mut vals = [a[0], a[5], a[10], a[15]];
-    vals.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    vals.sort_by(f64::total_cmp);
     vals
 }
 

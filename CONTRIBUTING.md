@@ -18,20 +18,21 @@ cargo test --release --lib tests::phase18
 cargo test --release --lib tests::phase19
 cargo test --release --lib tests::phase20
 
-# Full automated test suite (194 unit tests)
+# Full automated test suite (195 unit tests)
 cargo test --release
 ```
 
 ### 2. Independent Python / NumPy / SciPy Cross-Checks
 ```bash
-pip install numpy scipy matplotlib
+pip install -r requirements-ci.txt
 python scripts/verify_via_a_mlodinow_brun.py
 python scripts/verify_via_c_schwinger_exact.py
 ```
 
 ### 3. WebAssembly SIMD Build & Local Preview
 ```bash
-RUSTFLAGS="-C target-feature=+simd128" wasm-pack build --target web --release
+# `.cargo/config.toml` already configures `-C target-feature=+simd128` for wasm32-unknown-unknown
+wasm-pack build --target web --release
 python -m http.server 8000
 # Open http://localhost:8000/ in a SIMD-capable browser (Chrome 91+, Firefox 89+, Safari 16.4+, Edge 91+)
 ```

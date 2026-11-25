@@ -127,25 +127,69 @@ pub fn lin_fit_r2(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
     let a = my - b * mx;
     let r2 = if sxx > 1e-30 && syy > 1e-30 {
         (sxy * sxy) / (sxx * syy)
-    } else {
+    } else if syy <= 1e-30 {
         1.0
+    } else {
+        0.0
     };
     (a, b, r2.clamp(0.0, 1.0))
 }
 
-/// Exportación reproducible de tablas CSV y resumen JSON en `datos_investigacion/` (solo nativo).
+/// Resuelve y valida una ruta relativa estrictamente contenida en `datos_investigacion/`
+/// (rechaza rutas absolutas, prefijos de unidad y componentes `..`).
+#[cfg(not(target_arch = "wasm32"))]
+fn safe_research_path(rel_path: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::path::{Component, Path, PathBuf};
+    let rel = Path::new(rel_path);
+    if rel_path.is_empty() || rel.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "research path must be a non-empty relative path",
+        ));
+    }
+    let mut clean = PathBuf::from("datos_investigacion");
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(seg) => clean.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("unsafe research path component in '{rel_path}'"),
+                ));
+            }
+        }
+    }
+    Ok(clean)
+}
+
+/// Exportación reproducible y atómica de tablas CSV y resumen JSON en `datos_investigacion/` (solo nativo).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_research_file(rel_path: &str, content: &str) -> std::io::Result<()> {
-    let p = std::path::Path::new("datos_investigacion").join(rel_path);
+    let p = safe_research_path(rel_path)?;
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(p, content)
+    let tmp = p.with_extension(format!(
+        "{}.tmp.{}",
+        p.extension().and_then(|e| e.to_str()).unwrap_or("dat"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, content)?;
+    if let Err(err) = std::fs::rename(&tmp, &p) {
+        // En Windows, rename sobre archivo existente puede fallar; fallback seguro:
+        let _ = std::fs::remove_file(&p);
+        if let Err(err2) = std::fs::rename(&tmp, &p) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(if err2.kind() == std::io::ErrorKind::NotFound { err } else { err2 });
+        }
+    }
+    Ok(())
 }
 
 /// Lectura de archivo o checkpoint en `datos_investigacion/` (solo nativo).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_research_file(rel_path: &str) -> Option<String> {
-    let p = std::path::Path::new("datos_investigacion").join(rel_path);
+    let p = safe_research_path(rel_path).ok()?;
     std::fs::read_to_string(p).ok()
 }

@@ -11,10 +11,12 @@
 //!     exactamente sin masa (c_CFT = 1) e iguala las velocidades infrarrojas de AMBAS especies A y B
 //!     a la **media geométrica exacta** v_IR = √(v_A · v_B), con transferencia de sabor ΔN_B ≡ 0!
 
+use crate::linalg::{complete_complex_isometry, complete_real_isometry};
 use crate::research_io::lin_fit_r2;
 use crate::rng::SplitMix64;
 use crate::spinor::cx;
 use crate::sun::C;
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -391,7 +393,7 @@ fn lanczos_ir_pole_2f(
         .map(|k| (evals[k] - e0, vecs[k] * vecs[k]))
         .filter(|&(wx, p)| wx > 1e-5 && p > 1e-4)
         .collect();
-    poles.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    poles.sort_by(|a, b| a.0.total_cmp(&b.0));
     // Primer cúmulo infrarrojo con peso apreciable ≥ 8 %
     let mut clusters: Vec<(f64, f64)> = Vec::new();
     for &(wx, p) in &poles {
@@ -408,7 +410,7 @@ fn lanczos_ir_pole_2f(
     let omega_ir = clusters
         .iter()
         .find(|&&(_, p)| p >= 0.08)
-        .or_else(|| clusters.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)))
+        .or_else(|| clusters.iter().max_by(|a, b| a.1.total_cmp(&b.1)))
         .map(|&(wx, _)| wx)
         .unwrap_or(0.0);
     let q_scale = 2.0 * (PI / (2.0 * (nr + 1) as f64)).sin();
@@ -583,14 +585,16 @@ fn block_svd_tall(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64
     }
     let norms: Vec<f64> = (0..n).map(|j| cols[j].iter().map(|v| v * v).sum::<f64>().sqrt()).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&i, &j| norms[j].total_cmp(&norms[i]));
     let mut u = vec![0.0; m * n];
     let mut s = vec![0.0; n];
     let mut vt = vec![0.0; n * n];
+    let mut rank = 0usize;
     for (idx, &col) in order.iter().enumerate() {
         let sig = norms[col];
         s[idx] = sig;
         if sig > 1e-15 {
+            rank += 1;
             let inv = 1.0 / sig;
             for i in 0..m {
                 u[i * n + idx] = cols[col][i] * inv;
@@ -599,6 +603,9 @@ fn block_svd_tall(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64
         for j in 0..n {
             vt[idx * n + j] = vcols[col][j];
         }
+    }
+    if rank < n {
+        complete_real_isometry(&mut u, m, n, rank);
     }
     (u, s, vt)
 }
@@ -612,6 +619,7 @@ pub struct U1Mps {
     pub q_bonds: Vec<Vec<i32>>, // l + 1 vectores de cargas de enlace (2·S^z acumulado)
     pub tensors: Vec<Vec<f64>>, // [s * dl * dr + a * dr + b]
     pub center_s: Vec<f64>,     // valores singulares en el último corte central
+    pub bond_s: Vec<Vec<f64>>,  // valores singulares por enlace (índice 1..l)
 }
 
 impl U1Mps {
@@ -663,6 +671,7 @@ impl U1Mps {
             q_bonds,
             tensors,
             center_s: vec![1.0],
+            bond_s: vec![vec![1.0]; l + 1],
         };
         for i in (1..l).rev() {
             let dl = mps.q_bonds[i].len();
@@ -681,6 +690,7 @@ impl U1Mps {
             }
             let mut new_q = Vec::new();
             let mut u_list: Vec<(Vec<(usize, f64)>, Vec<(usize, usize, f64)>)> = Vec::new();
+            let mut fallback: Option<(f64, i32, Vec<(usize, f64)>, Vec<(usize, usize, f64)>)> = None;
             for (&q, (l_idx, r_idx)) in &by_q {
                 if l_idx.is_empty() || r_idx.is_empty() {
                     continue;
@@ -697,6 +707,11 @@ impl U1Mps {
                 let kk = svals.len();
                 for c in 0..kk {
                     if svals[c] < 1e-13 {
+                        if c == 0 && fallback.as_ref().map_or(true, |fb| svals[0] > fb.0) {
+                            let ucol = (0..bm).map(|ii| (l_idx[ii], u[ii * kk] * svals[0])).collect();
+                            let vrow = (0..bn).map(|jj| (r_idx[jj].0, r_idx[jj].1, vt[jj])).collect();
+                            fallback = Some((svals[0], q, ucol, vrow));
+                        }
                         continue;
                     }
                     new_q.push(q);
@@ -705,7 +720,15 @@ impl U1Mps {
                     u_list.push((ucol, vrow));
                 }
             }
-            let kn = new_q.len().max(1);
+            if new_q.is_empty() {
+                if let Some((_, q, ucol, vrow)) = fallback {
+                    new_q.push(q);
+                    u_list.push((ucol, vrow));
+                } else {
+                    new_q.push(mps.q_bonds[i].first().copied().unwrap_or(0));
+                }
+            }
+            let kn = new_q.len();
             let mut new_right = vec![0.0; 2 * kn * dr];
             let dl_prev = mps.q_bonds[i - 1].len();
             let mut new_left = vec![0.0; 2 * dl_prev * kn];
@@ -734,10 +757,15 @@ impl U1Mps {
         mps
     }
 
-    pub fn entanglement_at(&self, _bond: usize) -> f64 {
+    pub fn entanglement_at(&self, bond: usize) -> f64 {
+        let svs: &[f64] = if bond < self.bond_s.len() && !self.bond_s[bond].is_empty() {
+            &self.bond_s[bond]
+        } else {
+            &self.center_s
+        };
         let mut ent = 0.0;
-        let norm2: f64 = self.center_s.iter().map(|s| s * s).sum();
-        for &s in &self.center_s {
+        let norm2: f64 = svs.iter().map(|s| s * s).sum();
+        for &s in svs {
             let p = (s * s) / norm2.max(1e-30);
             if p > 1e-15 {
                 ent -= p * p.ln();
@@ -750,6 +778,7 @@ impl U1Mps {
 /// DMRG variacional de dos sitios con conservación estricta de simetría U(1) por bloques de carga
 /// (Lanczos restringido al subespacio de carga exacta + SVD independiente por bloque de carga q_mid!).
 pub fn run_u1_dmrg(mpo: &U1Mpo, chi_max: usize, sweeps: usize) -> (f64, U1Mps) {
+    let chi_max = chi_max.max(1);
     let l = mpo.sites.len();
     let mut mps = U1Mps::seed_u1(l, 0x18C0_4242 ^ (l as u64 * 131));
     let phys_q = [1i32, -1i32];
@@ -1062,6 +1091,7 @@ pub fn run_u1_dmrg(mpo: &U1Mpo, chi_max: usize, sweeps: usize) -> (f64, U1Mps) {
                 v_row: Vec<(usize, usize, f64)>,
             }
             let mut entries = Vec::new();
+            let mut fallback: Option<SvdEntry> = None;
             for (&q_mid, l_list) in &left_by_q {
                 let Some(r_list) = right_by_q.get(&q_mid) else { continue };
                 let bm = l_list.len();
@@ -1076,6 +1106,11 @@ pub fn run_u1_dmrg(mpo: &U1Mpo, chi_max: usize, sweeps: usize) -> (f64, U1Mps) {
                 let kk = s.len();
                 for c in 0..kk {
                     if s[c] < 1e-13 {
+                        if c == 0 && fallback.as_ref().map_or(true, |fb| s[0] > fb.sig) {
+                            let u_col = (0..bm).map(|ii| (l_list[ii].0, l_list[ii].1, u[ii * kk])).collect();
+                            let v_row = (0..bn).map(|jj| (r_list[jj].0, r_list[jj].1, vt[jj])).collect();
+                            fallback = Some(SvdEntry { sig: s[0], q: q_mid, u_col, v_row });
+                        }
                         continue;
                     }
                     let u_col = (0..bm).map(|ii| (l_list[ii].0, l_list[ii].1, u[ii * kk + c])).collect();
@@ -1088,14 +1123,28 @@ pub fn run_u1_dmrg(mpo: &U1Mpo, chi_max: usize, sweeps: usize) -> (f64, U1Mps) {
                     });
                 }
             }
-            entries.sort_by(|a, b| b.sig.partial_cmp(&a.sig).unwrap_or(std::cmp::Ordering::Equal));
+            if entries.is_empty() {
+                if let Some(fb) = fallback {
+                    entries.push(fb);
+                } else {
+                    entries.push(SvdEntry {
+                        sig: 1.0,
+                        q: ql.first().copied().unwrap_or(0) + phys_q[0],
+                        u_col: vec![(0, 0, 1.0)],
+                        v_row: vec![(0, 0, 1.0)],
+                    });
+                }
+            }
+            entries.sort_by(|a, b| b.sig.total_cmp(&a.sig));
             if entries.len() > chi_max {
                 entries.truncate(chi_max);
             }
-            let k_new = entries.len().max(1);
+            let k_new = entries.len();
             let s_norm = entries.iter().map(|e| e.sig * e.sig).sum::<f64>().sqrt().max(1e-30);
+            let s_vec: Vec<f64> = entries.iter().map(|e| e.sig / s_norm).collect();
+            mps.bond_s[i + 1] = s_vec.clone();
             if i + 1 == center_bond {
-                mps.center_s = entries.iter().map(|e| e.sig / s_norm).collect();
+                mps.center_s = s_vec;
             }
 
             let mut new_q = Vec::with_capacity(k_new);
@@ -1515,14 +1564,16 @@ fn block_csvd_tall(a: &[C], m: usize, n: usize) -> (Vec<C>, Vec<f64>, Vec<C>) {
     }
     let norms: Vec<f64> = (0..n).map(|j| cols[j].iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt()).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&i, &j| norms[j].total_cmp(&norms[i]));
     let mut u = vec![cx(0.0, 0.0); m * n];
     let mut s = vec![0.0; n];
     let mut vh = vec![cx(0.0, 0.0); n * n];
+    let mut rank = 0usize;
     for (idx, &col) in order.iter().enumerate() {
         let sig = norms[col];
         s[idx] = sig;
         if sig > 1e-14 {
+            rank += 1;
             let inv = 1.0 / sig;
             for i in 0..m {
                 u[i * n + idx] = cols[col][i] * inv;
@@ -1531,6 +1582,9 @@ fn block_csvd_tall(a: &[C], m: usize, n: usize) -> (Vec<C>, Vec<f64>, Vec<C>) {
         for j in 0..n {
             vh[idx * n + j] = vcols[col][j].conj();
         }
+    }
+    if rank < n {
+        complete_complex_isometry(&mut u, m, n, rank);
     }
     (u, s, vh)
 }
@@ -1571,6 +1625,7 @@ impl U1Cmps {
             }
             let mut new_q = Vec::new();
             let mut u_list: Vec<(Vec<(usize, C)>, Vec<(usize, usize, C)>)> = Vec::new();
+            let mut fallback: Option<(f64, i32, Vec<(usize, C)>, Vec<(usize, usize, C)>)> = None;
             for (&q, (l_idx, r_idx)) in &by_q {
                 if l_idx.is_empty() || r_idx.is_empty() {
                     continue;
@@ -1587,6 +1642,11 @@ impl U1Cmps {
                 let kk = svals.len();
                 for c in 0..kk {
                     if svals[c] < 1e-13 {
+                        if c == 0 && fallback.as_ref().map_or(true, |fb| svals[0] > fb.0) {
+                            let ucol = (0..bm).map(|ii| (l_idx[ii], u[ii * kk] * svals[0])).collect();
+                            let vrow = (0..bn).map(|jj| (r_idx[jj].0, r_idx[jj].1, vh[jj])).collect();
+                            fallback = Some((svals[0], q, ucol, vrow));
+                        }
                         continue;
                     }
                     new_q.push(q);
@@ -1595,7 +1655,15 @@ impl U1Cmps {
                     u_list.push((ucol, vrow));
                 }
             }
-            let kn = new_q.len().max(1);
+            if new_q.is_empty() {
+                if let Some((_, q, ucol, vrow)) = fallback {
+                    new_q.push(q);
+                    u_list.push((ucol, vrow));
+                } else {
+                    new_q.push(self.q_bonds[i].first().copied().unwrap_or(0));
+                }
+            }
+            let kn = new_q.len();
             let mut new_right = vec![cx(0.0, 0.0); 2 * kn * dr];
             let dl_prev = self.q_bonds[i - 1].len();
             let mut new_left = vec![cx(0.0, 0.0); 2 * dl_prev * kn];
@@ -1727,14 +1795,22 @@ impl U1Cmps {
             return 0.0;
         }
         // Operador (n_{A,r} + n_{B,r} − 1) = (n_{A,r} − ½) + (n_{B,r} − ½) = ½(σ^z_{A,r} + σ^z_{B,r})
-        // Evaluamos las 4 combinaciones (α ∈ {A,B}, β ∈ {A,B}) de ⟨(n_i − ½)(n_j − ½)⟩:
-        let two_pt = |i0: usize, i1: usize| -> f64 {
+        // Evaluamos las 4 combinaciones (α ∈ {A,B}, β ∈ {A,B}) de ⟨(n_i − ½)(n_j − ½)⟩ / ⟨ψ|ψ⟩:
+        let two_pt = |i0: Option<usize>, i1: Option<usize>| -> f64 {
             let mut l_mat = vec![cx(1.0, 0.0)];
             for i in 0..self.l {
                 let dl = self.q_bonds[i].len();
                 let dr = self.q_bonds[i + 1].len();
                 let a = &self.tensors[i];
-                let weights = if i == i0 || i == i1 { [0.5f64, -0.5f64] } else { [1.0, 1.0] };
+                let mut weights = [1.0f64, 1.0f64];
+                if Some(i) == i0 {
+                    weights[0] *= 0.5;
+                    weights[1] *= -0.5;
+                }
+                if Some(i) == i1 {
+                    weights[0] *= 0.5;
+                    weights[1] *= -0.5;
+                }
                 let mut next = vec![cx(0.0, 0.0); dr * dr];
                 let mut tmp = vec![cx(0.0, 0.0); dl * dr];
                 for s in 0..2 {
@@ -1768,12 +1844,16 @@ impl U1Cmps {
             }
             l_mat[0].re
         };
-        let val = two_pt(2 * r0, 2 * r1)
-            + two_pt(2 * r0, 2 * r1 + 1)
-            + two_pt(2 * r0 + 1, 2 * r1)
-            + two_pt(2 * r0 + 1, 2 * r1 + 1);
+        let norm2 = two_pt(None, None);
+        if norm2.abs() <= 1e-30 {
+            return 0.0;
+        }
+        let val = two_pt(Some(2 * r0), Some(2 * r1))
+            + two_pt(Some(2 * r0), Some(2 * r1 + 1))
+            + two_pt(Some(2 * r0 + 1), Some(2 * r1))
+            + two_pt(Some(2 * r0 + 1), Some(2 * r1 + 1));
         let sgn = if dist % 2 == 0 { 1.0 } else { -1.0 };
-        sgn * val
+        sgn * val / norm2
     }
 }
 
@@ -1940,6 +2020,8 @@ pub fn tdvp_2site_step(
     dt: f64,
     chi_max: usize,
 ) {
+    let chi_max = chi_max.max(1);
+    let dt = clamp_finite(dt, -10.0, 10.0, 0.25);
     let l = mps.l;
     let phys_q = [1i32, -1i32];
     let half_dt = 0.5 * dt;
@@ -2161,6 +2243,7 @@ pub fn tdvp_2site_step(
             v_row: Vec<(usize, usize, C)>,
         }
         let mut entries = Vec::new();
+        let mut fallback: Option<CSvdEntry> = None;
         for (&q_mid, l_list) in &left_by_q {
             let Some(r_list) = right_by_q.get(&q_mid) else { continue };
             let bm = l_list.len();
@@ -2175,6 +2258,11 @@ pub fn tdvp_2site_step(
             let kk = s.len();
             for c in 0..kk {
                 if s[c] < 1e-13 {
+                    if c == 0 && fallback.as_ref().map_or(true, |fb| s[0] > fb.sig) {
+                        let u_col = (0..bm).map(|ii| (l_list[ii].0, l_list[ii].1, u[ii * kk])).collect();
+                        let v_row = (0..bn).map(|jj| (r_list[jj].0, r_list[jj].1, vh[jj])).collect();
+                        fallback = Some(CSvdEntry { sig: s[0], q: q_mid, u_col, v_row });
+                    }
                     continue;
                 }
                 let u_col = (0..bm).map(|ii| (l_list[ii].0, l_list[ii].1, u[ii * kk + c])).collect();
@@ -2182,11 +2270,23 @@ pub fn tdvp_2site_step(
                 entries.push(CSvdEntry { sig: s[c], q: q_mid, u_col, v_row });
             }
         }
-        entries.sort_by(|a, b| b.sig.partial_cmp(&a.sig).unwrap_or(std::cmp::Ordering::Equal));
+        if entries.is_empty() {
+            if let Some(fb) = fallback {
+                entries.push(fb);
+            } else {
+                entries.push(CSvdEntry {
+                    sig: 1.0,
+                    q: ql.first().copied().unwrap_or(0) + phys_q[0],
+                    u_col: vec![(0, 0, cx(1.0, 0.0))],
+                    v_row: vec![(0, 0, cx(1.0, 0.0))],
+                });
+            }
+        }
+        entries.sort_by(|a, b| b.sig.total_cmp(&a.sig));
         if entries.len() > chi_max {
             entries.truncate(chi_max);
         }
-        let k_new = entries.len().max(1);
+        let k_new = entries.len();
         let s_norm = entries.iter().map(|e| e.sig * e.sig).sum::<f64>().sqrt().max(1e-30);
         let mut new_q = Vec::with_capacity(k_new);
         let mut new_a = vec![cx(0.0, 0.0); 2 * dl * k_new];

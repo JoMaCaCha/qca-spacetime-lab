@@ -24,6 +24,7 @@ use crate::analog::{bogoliubov_block, focusing_band, parametric_rate_impl};
 use crate::linalg::eigvals;
 use crate::rng::SplitMix64;
 use crate::spinor::{cx, pauli_eigenbasis};
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -72,7 +73,9 @@ fn one_loop_delta_e2(k: f64, mf: f64, m_phi: f64, g_y: f64, lattice: bool, wilso
         let b_term = mk * mp - sk * sp;
         let num = ek * ek * ep + b_term * (ep + om);
         let den = om * ep * (ek * ek - (ep + om) * (ep + om));
-        integral += num / den;
+        if den.abs() > 1e-30 {
+            integral += num / den;
+        }
     }
     g_y * g_y * integral * dq / (2.0 * PI)
 }
@@ -485,7 +488,11 @@ pub fn run_discover_discrete_floquet_map(m: f64, g: f64, rho_bar: f64, seed: u64
     // Derivada aprendida θ′(ρ̄) = a1 + 2 a2 ρ̄ + 3 a3 ρ̄² + 4 a4 ρ̄³
     let th_prime_learned = coef[0] + 2.0 * coef[1] * rho_bar + 3.0 * coef[2] * rho_bar * rho_bar + 4.0 * coef[3] * rho_bar.powi(3);
     let th_prime_exact = g / (1.0 + rho_bar / emax).powi(2);
-    let err_thp = (th_prime_learned / th_prime_exact - 1.0).abs();
+    let err_thp = if th_prime_exact.abs() > 1e-30 {
+        (th_prime_learned / th_prime_exact - 1.0).abs()
+    } else {
+        (th_prime_learned - th_prime_exact).abs()
+    };
 
     // Paso 3: análisis de Floquet–Bogoliubov del MAPA DISCRETO APRENDIDO (C_learned + θ′_learned)
     let (u1, lam0) = focusing_band(m, 1, 0.0);
@@ -561,10 +568,10 @@ impl QuantumSpacetimeUniverse {
     /// Devuelve [dc2_cont_L120, dc2_cont_L20, dc2_red_wilson, dc2_red_r0, delta_c_especies, dm2_cont, dm2_red].
     pub fn collins_one_loop_lv(&self, mf: f32, m_phi: f32, g_y: f32, wilson_r: f32) -> Vec<f64> {
         compute_collins_one_loop_lv(
-            (mf as f64).clamp(0.05, 1.5),
-            (m_phi as f64).clamp(0.2, 4.0),
-            (g_y as f64).clamp(0.0, 2.0),
-            (wilson_r as f64).clamp(0.0, 2.0),
+            clamp_finite(mf as f64, 0.05, 1.5, 0.25),
+            clamp_finite(m_phi as f64, 0.2, 4.0, 1.2),
+            clamp_finite(g_y as f64, 0.0, 2.0, 0.5),
+            clamp_finite(wilson_r as f64, 0.0, 2.0, 1.0),
         )
     }
 
@@ -572,7 +579,13 @@ impl QuantumSpacetimeUniverse {
     /// de Gupta–Short `(tx, ty, tz)` buscando dobladores/ceros espurios fuera de |k| < 0,35.
     /// Devuelve [eps_min, kx, ky, kz, c_cono, num_minimos_bajos].
     pub fn scan_3d_lightlike_walk(&self, tx: f32, ty: f32, tz: f32, alternating: bool, grid_n: u32) -> Vec<f64> {
-        scan_3d_lightlike_walk_impl(tx as f64, ty as f64, tz as f64, alternating, grid_n as usize)
+        scan_3d_lightlike_walk_impl(
+            clamp_finite(tx as f64, -PI, PI, 0.0),
+            clamp_finite(ty as f64, -PI, PI, 0.0),
+            clamp_finite(tz as f64, -PI, PI, 0.0),
+            alternating,
+            grid_n as usize,
+        )
     }
 
     /// Fase 15 (§8.6): barrido sistemático de ángulos (θ_x, θ_y, θ_z) para cuantificar la
@@ -587,9 +600,9 @@ impl QuantumSpacetimeUniverse {
     /// Devuelve [tasa_mapa_aprendido, tasa_exacta, q_aprendido, q_exacto, err_moneda, err_theta_p, tasa_edp_continua].
     pub fn discover_discrete_floquet_map(&self, m: f32, g: f32, rho_bar: f32, seed: u32) -> Vec<f64> {
         run_discover_discrete_floquet_map(
-            (m as f64).clamp(0.1, 1.4),
-            (g as f64).clamp(-0.5, 0.5),
-            (rho_bar as f64).clamp(0.05, 1.5),
+            clamp_finite(m as f64, 0.1, 1.4, 0.5),
+            clamp_finite(g as f64, -0.5, 0.5, -0.05),
+            clamp_finite(rho_bar as f64, 0.05, 1.5, 0.5),
             seed as u64,
         )
     }

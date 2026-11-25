@@ -74,6 +74,8 @@ pub use walk::apply_coin;
 pub(crate) const MAX_SOLITONS: usize = 2048;
 /// Floats por solitón en `soliton_stats_ptr`.
 pub(crate) const SOLITON_FIELDS: usize = 12;
+/// Tope global de celdas de la malla para impedir desbordamientos de `usize` de 32 bits y OOM en WASM.
+pub(crate) const MAX_CELLS: usize = 4_194_304;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -213,6 +215,12 @@ impl QuantumSpacetimeUniverse {
         self.idx(xx, yy, zz)
     }
 
+    /// Amplitudes complejas por celda (`n_c * ncol`).
+    #[inline]
+    pub(crate) fn namp(&self) -> usize {
+        self.nc * self.ncol
+    }
+
     /// Floats por celda: 2·n_c·N (con N colores; N = 1 sin color).
     #[inline]
     pub(crate) fn stride(&self) -> usize {
@@ -227,8 +235,10 @@ impl QuantumSpacetimeUniverse {
 
     /// m\* de la banda focalizante: ω(k) ≈ m + |k|²/(2m\*), con m\* = dim·tan m (derivado de la
     /// relación de dispersión exacta de la moneda de Grover; m\* ≈ 1,09 en 2D y ≈ 1,64 en 3D con m = 0,5).
+    /// Se acota `m` por debajo de π/2 en f64 para evitar que el redondeo `f32::FRAC_PI_2 > π/2` dé tan(m) < 0.
     pub(crate) fn band_mass(&self) -> f64 {
-        self.dim as f64 * (self.mass as f64).tan()
+        let m = (self.mass as f64).clamp(0.0, std::f64::consts::FRAC_PI_2 - 1e-6);
+        self.dim as f64 * m.tan()
     }
 
     // --- Ganchos de los modos que amplían el paso de la materia (fases posteriores) ---
@@ -276,9 +286,20 @@ impl QuantumSpacetimeUniverse {
     /// Valores por defecto de §2: α = 0,5 y E_cap = 20·E_max en 2D o 30·E_max en 3D.
     #[wasm_bindgen(constructor)]
     pub fn new(width: usize, height: usize, depth: usize, mass: f32, g: f32, e_max: f32) -> QuantumSpacetimeUniverse {
-        let w = width.clamp(2, 4096);
-        let h = height.clamp(1, 4096);
-        let d = depth.clamp(1, 256);
+        let mut w = width.clamp(2, 4096);
+        let mut h = height.clamp(1, 4096);
+        let mut d = depth.clamp(1, 256);
+        // Acotar el volumen total (w * h * d <= MAX_CELLS) con aritmética comprobada para impedir
+        // desbordamientos de usize en wasm32 (32 bits) y agotamiento de memoria.
+        while w.checked_mul(h).and_then(|wh| wh.checked_mul(d)).map_or(true, |n| n > MAX_CELLS) {
+            if d > 1 && d >= h && d >= w {
+                d = (d / 2).max(1);
+            } else if h >= w && h > 1 {
+                h = (h / 2).max(1);
+            } else {
+                w = (w / 2).max(2);
+            }
+        }
         let dim = if d > 1 { 3 } else { 2 };
         let nc_max = 2 * dim;
         let n = w * h * d;
@@ -403,17 +424,17 @@ impl QuantumSpacetimeUniverse {
             self.t = self.t.wrapping_add(1);
             return;
         }
-        if self.scenario == 10 && (self.an.strip.is_some() || self.an.setup == 4) {
+        if self.scenario == 10 && self.an.setup == 0 && self.an.strip.is_some() {
             // la tira (láser) avanza; el Hawking por lotes y el Unruh no usan la malla
             self.analog_strip_step();
             return;
         }
-        if self.fl.active {
-            self.flavour_step();
-            return;
-        }
         if self.higgs.mode != 0 {
             self.higgs_step();
+            return;
+        }
+        if self.fl.active {
+            self.flavour_step();
             return;
         }
         if self.scenario == 5 {
@@ -484,6 +505,21 @@ impl QuantumSpacetimeUniverse {
         self.message.clone()
     }
 
+    /// Devuelve y limpia el último mensaje de aviso para evitar falsos positivos en llamadas posteriores.
+    pub fn take_message(&mut self) -> String {
+        std::mem::take(&mut self.message)
+    }
+
+    /// Libera los búferes temporales de los laboratorios por lotes (útil para instancias persistentes como `S.plU`).
+    pub fn reset_lab_buffers(&mut self) {
+        self.oq = open_quantum::OpenQuantum::new();
+        self.pairs = pairs::PairLab::new();
+        self.bos = bosons::Bosons::new();
+        self.an = analog::Analog::new();
+        self.modes = condensate::ModeCapture::new();
+        self.autocorr = spectral::AutoCorr::new();
+    }
+
     // ------------------------------------------------------------------ parámetros
 
     pub fn set_mass(&mut self, m: f32) {
@@ -521,6 +557,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Tope absoluto E_cap (§2.5); 0 = sin tope.
     pub fn set_capacity(&mut self, e_cap: f32) {
+        self.message.clear();
         if !e_cap.is_finite() {
             return;
         }
@@ -723,6 +760,17 @@ impl QuantumSpacetimeUniverse {
         self.sky = skyrme::Skyrme::new();
         self.flq = floquet::Floquet::new();
         self.an = analog::Analog::new();
+        if self.scenario != 4 {
+            self.light = light::Light::new();
+        }
+        if self.scenario != 5 {
+            self.kap = kaplan::Kaplan::new();
+        }
+        self.pairs = pairs::PairLab::new();
+        self.bos = bosons::Bosons::new();
+        self.oq = open_quantum::OpenQuantum::new();
+        self.autocorr = spectral::AutoCorr::new();
+        self.modes = condensate::ModeCapture::new();
         self.higgs.mode = 0;
         self.dmass.active = false;
         self.dmass.yukawa = 0;
@@ -730,14 +778,17 @@ impl QuantumSpacetimeUniverse {
         if self.ncol > 1 {
             self.resize_colour(1);
         }
-        // Dirac 3D (4 componentes) y Weyl (2 componentes, 3D o 2D con k_z fijo) usan el motor de
-        // espinores en f64; el Dirac 2D de §2.8 sigue con su paso de 2 componentes.
+        if self.e_cap > 0.0 && self.n <= 64 * 64 * 64 {
+            self.ensure_cap_shadow();
+        }
+        // Limpiar antes de sembrar los escenarios con inicialización propia (6, 7, 8, 9, 10)
         self.sw = spinor::SpinorWalk::new();
         match self.scenario {
             2 if self.dim == 3 => self.sw_activate(4, false),
             3 => self.sw_activate(2, true),
             _ => {}
         }
+        self.clear();
         if self.scenario == 6 {
             self.set_scenario_sm(1, true, true, 0.6, 0.4, 0.8);
         }
@@ -751,7 +802,6 @@ impl QuantumSpacetimeUniverse {
             self.floquet_anomalous_init(0, 20, 0.0);
             self.floquet_inject(0, 11);
         }
-        self.clear();
         if self.scenario == 10 {
             self.set_analog_setup(if self.dim == 3 { 3 } else { 0 });
         }
@@ -805,7 +855,10 @@ impl QuantumSpacetimeUniverse {
         }
         if self.fl.active {
             self.fl.psi.iter_mut().for_each(|v| *v = rustfft::num_complex::Complex::new(0.0, 0.0));
-            self.fl.norms = vec![0.0; 3];
+            if self.fl.norms.len() != 3 {
+                self.fl.norms.resize(3, 0.0);
+            }
+            self.fl.norms.fill(0.0);
         }
         if self.scenario == 4 {
             for v in self.light.psi.iter_mut() {
@@ -814,6 +867,36 @@ impl QuantumSpacetimeUniverse {
             self.light.tracking = false;
             self.light.rounds = 0;
         }
+        if self.scenario == 5 && !self.kap.psi.is_empty() {
+            for v in self.kap.psi.iter_mut() {
+                *v = rustfft::num_complex::Complex::new(0.0, 0.0);
+            }
+        }
+        if self.scenario == 8 && self.sky.active {
+            for chunk in self.sky.psi.chunks_exact_mut(4) {
+                chunk[0] = 1.0;
+                chunk[1] = 0.0;
+                chunk[2] = 0.0;
+                chunk[3] = 0.0;
+            }
+            self.sky.dens.fill(0.0);
+        }
+        if self.scenario == 9 && self.flq.active {
+            for v in self.flq.psi.iter_mut() {
+                *v = rustfft::num_complex::Complex::new(0.0, 0.0);
+            }
+        }
+        if self.scenario == 10 {
+            if let Some(st) = self.an.strip.as_mut() {
+                st.hist.clear();
+                st.hist_rows = 0;
+            }
+            self.an.map.clear();
+            self.an.map_n = 0;
+        }
+        self.bos.rec_chalf.clear();
+        self.bos.rec_phi.clear();
+        self.bos.rec_amp.clear();
     }
 
     /// V = 0 y sin muros.

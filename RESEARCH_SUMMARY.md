@@ -3,7 +3,7 @@
 > **Language note:** This document provides a self-contained English technical summary of the three flagship computational physics research tracks in **QCA Spacetime Lab** (Phases 17–20, including all referee-grade convergence and multi-seed audits). The full historical Spanish technical log across all 20 development phases is archived in [`ANALISIS.md`](ANALISIS.md), and the Phase 17 pilot report is in [`estudio_preguntas_abiertas.md`](estudio_preguntas_abiertas.md).
 
 - **Repository:** https://github.com/JoMaCaCha/qca-spacetime-lab
-- **Archival DOI (Zenodo v1.0.0):** https://doi.org/10.5281/zenodo.24450504
+- **Archival DOI (Zenodo, latest):** https://doi.org/10.5281/zenodo.24450503
 - **Interactive WebAssembly SIMD Lab:** https://jomacacha.github.io/qca-spacetime-lab/
 - **Author:** Johan Manuel Cabrera Chavarro ([ORCID 0000-0002-7696-4741](https://orcid.org/0000-0002-7696-4741))
 
@@ -43,15 +43,15 @@ $$U_{\mathbf{k}} = e^{-i k_x \Delta x\,\gamma_X}\, e^{-i k_y \Delta x\,\gamma_Y}
 
 with $\gamma_j = \sigma_Z \otimes J_j$ and $R(\mathbf{k}) \in SO(3)$. Because
 
-$$\mathrm{Tr}\!\big(R(\pm\mathbf{k})\big) = c_x c_y + c_x c_z + c_y c_z \pm s_x s_y s_z,$$
+$$\mathrm{Tr}\!\big(R(\pm\mathbf{k})\big) = c_x c_y + c_x c_z + c_y c_z \mp s_x s_y s_z,$$
 
 the rotation angles $\phi(\mathbf{k})$ and $\phi(-\mathbf{k})$ are **not degenerate** whenever $k_x k_y k_z \neq 0$, lifting the opposite-helicity quasi-energies at leading order:
 
-$$\Delta\phi(\mathbf{k}) \equiv \phi(\mathbf{k}) - \phi(-\mathbf{k}) = -n_x n_y n_z\,(k\Delta x)^2 + \mathcal{O}\!\big((k\Delta x)^4\big).$$
+$$\Delta\phi(\mathbf{k}) \equiv \phi(\mathbf{k}) - \phi(-\mathbf{k}) = +n_x n_y n_z\,(k\Delta x)^2 + \mathcal{O}\!\big((k\Delta x)^4\big).$$
 
-This splitting is enforced by field reality $(\mathbf{E}, \mathbf{B} \in \mathbb{R}^3 \implies U(-\mathbf{k}) = U(\mathbf{k})^*)$ and agrees with dimension-5 Standard-Model Extension (SME) effective field theory (Myers & Pospelov, *PRL* **90**, 211601, 2003; Kostelecký & Mewes, *PRD* **80**, 015020, 2009). Direct real-field $(\mathbf{E}, \mathbf{B})$ evolution confirms linear polarization rotation at rate $\Delta\theta/\Delta t = [\phi(\mathbf{k}) - \phi(-\mathbf{k})]/2$ (measuring $-3.725\,01 \times 10^{-3}\ \mathrm{rad/step}$ at $\mathbf{k}\Delta x = (0.21, 0.13, 0.07)$ vs. $-3.724\,94 \times 10^{-3}$ analytical).
+This splitting is enforced by field reality $(\mathbf{E}, \mathbf{B} \in \mathbb{R}^3 \implies U(-\mathbf{k}) = U(\mathbf{k})^*)$ and agrees with dimension-5 Standard-Model Extension (SME) effective field theory (Myers & Pospelov, *PRL* **90**, 211601, 2003; Kostelecký & Mewes, *PRD* **80**, 015020, 2009). Direct real-field $(\mathbf{E}, \mathbf{B})$ evolution confirms linear polarization rotation at rate $\Delta\theta/\Delta t = [\phi(\mathbf{k}) - \phi(-\mathbf{k})]/2$ (measuring $+3.725\,01 \times 10^{-3}\ \mathrm{rad/step}$ at $\mathbf{k}\Delta x = (0.21, 0.13, 0.07)$ vs. $+3.724\,94 \times 10^{-3}$ analytical).
 
-Mapping the pure $j = 3$ pattern $\sum_{jm} Y_{jm}(\hat{\mathbf{n}}) k_{(V)jm}^{(5)} = -\frac{1}{2} n_x n_y n_z \Delta x$ onto all seven $j = 3$ optical polarimetry limits of Kislat & Krawczynski (*PRD* **95**, 083013, 2017, Table IV) via a joint profile-$\chi^2$ minimized over $1500$ Haar-random $SO(3)$ orientations yields orientation-independent exclusion of a Planck-scale lattice by $> 5$ orders of magnitude:
+Mapping the pure $j = 3$ pattern $\sum_{jm} Y_{jm}(\hat{\mathbf{n}}) k_{(V)jm}^{(5)} = +\frac{1}{2} n_x n_y n_z \Delta x$ onto all seven $j = 3$ optical polarimetry limits of Kislat & Krawczynski (*PRD* **95**, 083013, 2017, Table IV) via a joint profile-$\chi^2$ minimized over $1500$ Haar-random $SO(3)$ orientations yields orientation-independent exclusion of a Planck-scale lattice by $> 5$ orders of magnitude:
 
 | Criterion / Observable | Bound on $\Delta x / \ell_P$ |
 |---|---:|

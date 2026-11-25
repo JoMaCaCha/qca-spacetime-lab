@@ -28,6 +28,7 @@
 
 use crate::dmrg::{run_dmrg, SparseMpo};
 use crate::rng::SplitMix64;
+use crate::util::{fibonacci_sphere, mm_dim_2d};
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -369,7 +370,7 @@ fn exact_ir_structure_velocity(
         .map(|k| (evals[k] - e0, vecs[k] * vecs[k]))
         .filter(|&(w_ex, p)| w_ex > 1e-4 && p > 1e-4)
         .collect();
-    poles.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    poles.sort_by(|a, b| a.0.total_cmp(&b.0));
     // Agrupamos polos casi degenerados (Δω ≤ 0,08) y seleccionamos el primer modo infrarrojo
     // acústico con peso espectral apreciable (p_cluster ≥ 0,06), evitando modos ópticos UV de alta energía.
     let mut clusters: Vec<(f64, f64)> = Vec::new();
@@ -387,7 +388,7 @@ fn exact_ir_structure_velocity(
     let omega_ir = clusters
         .iter()
         .find(|&&(_, p)| p >= 0.06)
-        .or_else(|| clusters.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)))
+        .or_else(|| clusters.iter().max_by(|a, b| a.1.total_cmp(&b.1)))
         .map(|&(w_ex, _)| w_ex)
         .unwrap_or(0.0);
     omega_ir / (2.0 * (0.5 * q).sin())
@@ -687,15 +688,7 @@ fn qca3d_omega(family: usize, k: [f64; 3]) -> f64 {
 pub fn run_study2_3d_qca_triple_classification(grid_n: usize) -> Vec<f64> {
     let ng = grid_n.clamp(14, 28);
     let ndirs = 400usize;
-    let golden = PI * (3.0 - 5.0f64.sqrt());
-    let dirs: Vec<[f64; 3]> = (0..ndirs)
-        .map(|i| {
-            let z = 1.0 - 2.0 * (i as f64 + 0.5) / ndirs as f64;
-            let r = (1.0 - z * z).max(0.0).sqrt();
-            let th = golden * i as f64;
-            [r * th.cos(), r * th.sin(), z]
-        })
-        .collect();
+    let dirs = fibonacci_sphere(ndirs);
 
     let eval_fam = |fam: usize| -> [f64; 6] {
         // (i) Asimetría CPT en k genérico
@@ -831,11 +824,12 @@ fn johnston_retarded_2d(prec: &[bool], n: usize, m: f64) -> Vec<f64> {
 /// Acción espectral cuántica a 1 lazo de Sorkin–Johnston sobre un 2-orden causal `perm`:
 ///   S_mat[C] = ½ ln det(I + Δ^T Δ),   Δ = G_R − G_R^T (conmutador de Pauli–Jordan)
 /// calculada exactamente vía factorización de Cholesky L·L^T = I + Δ^T Δ ⇒ S_mat = Σ ln L_{ii}.
-fn eval_2order_bd_and_matter(perm: &[usize], m: f64) -> (f64, f64, usize) {
+fn eval_2order_bd_and_matter(perm: &[usize], m: f64, need_matter: bool) -> (f64, f64, usize) {
     let n = perm.len();
+    assert!(n <= 64, "eval_2order_bd_and_matter requiere N <= 64 (recibido {n})");
     let mut fut = [0u64; 64];
     let mut past = [0u64; 64];
-    let mut prec = vec![false; n * n];
+    let mut prec = if need_matter { vec![false; n * n] } else { Vec::new() };
     let mut n_rel = 0usize;
     for i in 0..n {
         let pi = perm[i];
@@ -844,7 +838,9 @@ fn eval_2order_bd_and_matter(perm: &[usize], m: f64) -> (f64, f64, usize) {
             if pi < perm[j] {
                 fi |= 1u64 << j;
                 past[j] |= 1u64 << i;
-                prec[i * n + j] = true;
+                if need_matter {
+                    prec[i * n + j] = true;
+                }
                 n_rel += 1;
             }
         }
@@ -866,6 +862,9 @@ fn eval_2order_bd_and_matter(perm: &[usize], m: f64) -> (f64, f64, usize) {
         }
     }
     let s_bd = (n as i64 - 2 * n1 + 4 * n2 - 2 * n3) as f64;
+    if !need_matter {
+        return (s_bd, 0.0, n_rel);
+    }
 
     // 2. Propagador retardado de Johnston G_R y acción de 1 lazo S_mat = ½ ln det(I + Δ^T Δ)
     let gr = johnston_retarded_2d(&prec, n, m);
@@ -918,47 +917,6 @@ fn eval_2order_bd_and_matter(perm: &[usize], m: f64) -> (f64, f64, usize) {
     (s_bd, log_det_half, n_rel)
 }
 
-fn mm_dim_2d(r_frac: f64) -> f64 {
-    let f = |d: f64| -> f64 {
-        let lgamma = |z: f64| -> f64 {
-            let p = [
-                676.5203681218851,
-                -1259.1392167224028,
-                771.32342877765313,
-                -176.61502916214059,
-                12.507343278686905,
-                -0.13857109526572012,
-                9.9843695780195716e-6,
-                1.5056327351493116e-7,
-            ];
-            let mut x = 0.99999999999980993;
-            let zm1 = z - 1.0;
-            for (k, &c) in p.iter().enumerate() {
-                x += c / (zm1 + (k + 1) as f64);
-            }
-            let t = zm1 + 7.5;
-            0.5 * (2.0 * PI).ln() + (zm1 + 0.5) * t.ln() - t + x.ln()
-        };
-        (lgamma(d + 1.0) + lgamma(0.5 * d) - 2.0f64.ln() - lgamma(1.5 * d)).exp()
-    };
-    if r_frac <= 0.01 {
-        return 6.0;
-    }
-    if r_frac >= 0.999 {
-        return 1.0;
-    }
-    let (mut lo, mut hi) = (1.0, 6.0);
-    for _ in 0..45 {
-        let mid = 0.5 * (lo + hi);
-        if f(mid) > r_frac {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
-}
-
 /// Estudio 3 (Pregunta Abierta #3):
 /// Parte A: propagador retardado exacto de Johnston (PRL 2009) en espolvoreados 2D de Minkowski
 ///   (N = 140, m = 0,8, 12 realizaciones) frente a ½ J₀(m τ), midiendo la varianza no local σ_G(τ).
@@ -987,7 +945,7 @@ pub fn run_study3_causal_set_matter_backreaction(n_mc: usize, sweeps: usize, n_s
                 ((u + v) * inv_s2, (u - v) * inv_s2)
             })
             .collect();
-        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut prec = vec![false; n_spr * n_spr];
         for i in 0..n_spr {
             for j in (i + 1)..n_spr {
@@ -1054,7 +1012,8 @@ pub fn run_study3_causal_set_matter_backreaction(n_mc: usize, sweeps: usize, n_s
                 let j = (rng.next_u64() as usize) % (i + 1);
                 perm.swap(i, j);
             }
-            let (mut s_cur, mut m_cur, mut rel_cur) = eval_2order_bd_and_matter(&perm, m_scalar);
+            let need_mat = nf > 0.0;
+            let (mut s_cur, mut m_cur, mut rel_cur) = eval_2order_bd_and_matter(&perm, m_scalar, need_mat);
             let mut s_acc = 0.0;
             let mut m_acc = 0.0;
             let mut r_acc = 0.0;
@@ -1067,7 +1026,7 @@ pub fn run_study3_causal_set_matter_backreaction(n_mc: usize, sweeps: usize, n_s
                         b += 1;
                     }
                     perm.swap(a, b);
-                    let (s_new, m_new, rel_new) = eval_2order_bd_and_matter(&perm, m_scalar);
+                    let (s_new, m_new, rel_new) = eval_2order_bd_and_matter(&perm, m_scalar, need_mat);
                     // Peso exp(+β S_BD − N_f S_mat)
                     let dw = beta * (s_new - s_cur) - nf * (m_new - m_cur);
                     if dw >= 0.0 || rng.next_f64() < dw.exp() {

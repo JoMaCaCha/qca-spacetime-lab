@@ -14,53 +14,12 @@
 //!    de deflexión de la luz en relatividad general frente a modelos escalares / grafos dinámicos.
 
 use crate::rng::SplitMix64;
+use crate::util::mm_dim_2d;
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
 
 // ------------------------------------------------------------------ 1. Monte Carlo dinámico de conjuntos causales (Surya 2012)
-
-/// Dimensión de Myrheim–Meyer a partir de la fracción de ordenamiento R = 2·N_rel/(N(N−1)).
-fn mm_dim_from_r(r_frac: f64) -> f64 {
-    let f = |d: f64| -> f64 {
-        let lgamma = |z: f64| -> f64 {
-            let p = [
-                676.5203681218851,
-                -1259.1392167224028,
-                771.32342877765313,
-                -176.61502916214059,
-                12.507343278686905,
-                -0.13857109526572012,
-                9.9843695780195716e-6,
-                1.5056327351493116e-7,
-            ];
-            let mut x = 0.99999999999980993;
-            let zm1 = z - 1.0;
-            for (k, &c) in p.iter().enumerate() {
-                x += c / (zm1 + (k + 1) as f64);
-            }
-            let t = zm1 + 7.5;
-            0.5 * (2.0 * PI).ln() + (zm1 + 0.5) * t.ln() - t + x.ln()
-        };
-        (lgamma(d + 1.0) + lgamma(0.5 * d) - 2.0f64.ln() - lgamma(1.5 * d)).exp()
-    };
-    if r_frac <= 0.01 {
-        return 6.0;
-    }
-    if r_frac >= 0.999 {
-        return 1.0;
-    }
-    let (mut lo, mut hi) = (1.0, 6.0);
-    for _ in 0..50 {
-        let mid = 0.5 * (lo + hi);
-        if f(mid) > r_frac {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
-}
 
 /// Evalúa (S_BD, N_rel, N_1) en un 2-orden representado por una permutación `perm` de 0..N (N ≤ 64).
 /// i ≺ j si y solo si i < j y perm[i] < perm[j].
@@ -68,6 +27,7 @@ fn mm_dim_from_r(r_frac: f64) -> f64 {
 #[inline]
 fn eval_2order_bd(perm: &[usize]) -> (f64, usize, usize) {
     let n = perm.len();
+    assert!(n <= 64, "eval_2order_bd requiere N <= 64 (recibido {n})");
     let mut fut = [0u64; 64];
     let mut past = [0u64; 64];
     let mut n_rel = 0usize;
@@ -165,7 +125,7 @@ pub fn run_causal_set_bd_mc(n_pts: usize, sweeps: usize, seed: u64) -> Vec<f64> 
         let s_mean = s_sum / cf;
         let var_s = (s2_sum / cf - s_mean * s_mean).max(0.0);
         let r_mean = r_sum / cf;
-        let d_mm = mm_dim_from_r(r_mean);
+        let d_mm = mm_dim_2d(r_mean);
         (s_mean / n as f64, var_s / n as f64, d_mm, r_mean, n1_sum / cf)
     };
 
@@ -226,16 +186,21 @@ fn q_add(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 
 /// Muestreo exacto de baño térmico de Kennedy–Pendleton (1985) para P(a₀) ∝ √(1 − a₀²) exp(α·a₀).
 fn sample_su2_heatbath(alpha: f64, rng: &mut SplitMix64) -> [f64; 4] {
+    let alpha = if alpha.is_finite() && alpha >= 0.0 { alpha } else { 0.0 };
     let a0 = if alpha < 0.08 {
-        loop {
+        let mut chosen = 0.0;
+        for _ in 0..10_000 {
             let x = 2.0 * rng.next_f64() - 1.0;
             let w = (1.0 - x * x).max(0.0).sqrt() * (alpha * (x - 1.0)).exp();
             if rng.next_f64() < w {
-                break x;
+                chosen = x;
+                break;
             }
         }
+        chosen
     } else {
-        loop {
+        let mut chosen = 1.0;
+        for _ in 0..10_000 {
             let r1 = rng.next_f64().max(1e-15);
             let r2 = rng.next_f64();
             let r3 = rng.next_f64().max(1e-15);
@@ -243,9 +208,11 @@ fn sample_su2_heatbath(alpha: f64, rng: &mut SplitMix64) -> [f64; 4] {
             let c = (2.0 * PI * r2).cos();
             let delta = -(r1.ln() + c * c * r3.ln()) / (2.0 * alpha);
             if delta <= 1.0 && r4 * r4 <= 1.0 - delta {
-                break 1.0 - 2.0 * delta;
+                chosen = 1.0 - 2.0 * delta;
+                break;
             }
         }
+        chosen
     };
     // Vector 3D uniforme en S² de radio √(1 − a₀²)
     let r_vec = (1.0 - a0 * a0).max(0.0).sqrt();
@@ -336,7 +303,11 @@ impl Lattice4D {
                                 let u_tilde = sample_su2_heatbath(beta * k, rng);
                                 let u_new = q_mul(u_tilde, w);
                                 let nrm = (u_new[0] * u_new[0] + u_new[1] * u_new[1] + u_new[2] * u_new[2] + u_new[3] * u_new[3]).sqrt();
-                                self.set(c, mu, [u_new[0] / nrm, u_new[1] / nrm, u_new[2] / nrm, u_new[3] / nrm]);
+                                if nrm > 1e-30 && nrm.is_finite() {
+                                    self.set(c, mu, [u_new[0] / nrm, u_new[1] / nrm, u_new[2] / nrm, u_new[3] / nrm]);
+                                } else {
+                                    self.set(c, mu, [1.0, 0.0, 0.0, 0.0]);
+                                }
                             }
                         }
                     }

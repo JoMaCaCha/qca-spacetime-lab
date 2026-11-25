@@ -84,7 +84,7 @@ impl Light {
                 (th, th)
             }
             2 => {
-                let h = self.metric_amp * (2.0 * PI * t / self.metric_period.max(1e-9)).sin();
+                let h = (self.metric_amp * (2.0 * PI * t / self.metric_period.max(1e-9)).sin()).clamp(-0.999, 0.999);
                 ((c0 / (1.0 + h).sqrt()).clamp(-1.0, 1.0).acos(), (c0 / (1.0 - h).sqrt()).clamp(-1.0, 1.0).acos())
             }
             _ => (self.theta0, self.theta0),
@@ -341,11 +341,12 @@ impl QuantumSpacetimeUniverse {
     /// §2.19 (escenario 4): n(r) = 1 + 2GM/√(r² + a²) centrado en (x, y), θ(r) = arccos(c₀/n) con
     /// c₀ = cos θ₀ (θ₀ = 0,3); gm = 0: medio uniforme.
     pub fn set_light_index(&mut self, gm: f32, x: f32, y: f32, softening: f32) {
-        if self.scenario != 4 {
+        if self.scenario != 4 || ![gm, x, y, softening].iter().all(|v| v.is_finite()) {
             return;
         }
         let (w, h) = (self.w, self.h);
-        self.light.gm = gm as f64;
+        let gm = gm.max(0.0) as f64;
+        self.light.gm = gm;
         self.light.src = [x as f64, y as f64];
         self.light.soft = (softening as f64).max(0.1);
         self.light.metric_kind = 0;
@@ -356,7 +357,7 @@ impl QuantumSpacetimeUniverse {
             } else {
                 let dx = min_image((i % w) as f64 - x as f64, w as f64);
                 let dy = min_image((i / w) as f64 - y as f64, h as f64);
-                let nn = 1.0 + 2.0 * gm as f64 / (dx * dx + dy * dy + self.light.soft * self.light.soft).sqrt();
+                let nn = (1.0 + 2.0 * gm / (dx * dx + dy * dy + self.light.soft * self.light.soft).sqrt()).max(1e-6);
                 (c0 / nn).clamp(-1.0, 1.0).acos()
             };
             self.light.set_theta(0, i, th);
@@ -418,6 +419,9 @@ impl QuantumSpacetimeUniverse {
     /// Fase de la componente de Fourier k proyectada sobre el autovector superior de la ronda con
     /// los θ actuales (la frecuencia del modo central, §3.17, es su ritmo de giro).
     pub fn light_mode_phase(&self, kx: f32, ky: f32) -> f64 {
+        if self.scenario != 4 || self.light.psi.len() != 2 * self.w * self.h || !(kx.is_finite() && ky.is_finite()) {
+            return 0.0;
+        }
         self.light_mode_amplitude([kx as f64, ky as f64]).arg()
     }
 
@@ -445,6 +449,9 @@ impl QuantumSpacetimeUniverse {
     pub fn light_upper_weight(&self) -> f64 {
         let (w, h) = (self.w, self.h);
         let n = w * h;
+        if self.scenario != 4 || self.light.psi.len() != 2 * n {
+            return 0.0;
+        }
         let (tx, ty) = if self.light.metric_kind == 0 { (self.light.theta0, self.light.theta0) } else { self.light.metric_thetas(self.light.rounds as f64) };
         let mut a: Vec<C> = self.light.psi[..n].to_vec();
         let mut b: Vec<C> = self.light.psi[n..].to_vec();

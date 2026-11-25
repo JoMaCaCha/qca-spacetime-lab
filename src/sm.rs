@@ -168,7 +168,7 @@ pub fn svd(y: &[C], n: usize) -> (Vec<f64>, Vec<C>, Vec<C>) {
     }
     let e = eig(a, n);
     let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&i, &j| e.values[i].re.partial_cmp(&e.values[j].re).unwrap());
+    idx.sort_by(|&i, &j| e.values[i].re.total_cmp(&e.values[j].re));
     let sv: Vec<f64> = idx.iter().map(|&i| e.values[i].re.max(0.0).sqrt()).collect();
     let mut w = vec![cx(0.0, 0.0); n * n];
     for (col, &i) in idx.iter().enumerate() {
@@ -185,15 +185,66 @@ pub fn svd(y: &[C], n: usize) -> (Vec<f64>, Vec<C>, Vec<C>) {
             w[r * n + col] = v[r] / nn;
         }
     }
+    // Construir V unitaria: primero columnas con valor singular no nulo, luego completar el núcleo por Gram–Schmidt.
     let mut v = vec![cx(0.0, 0.0); n * n];
+    let mut valid = vec![false; n];
     for k in 0..n {
-        for r in 0..n {
-            let mut s = cx(0.0, 0.0);
-            for i in 0..n {
-                s += y[i * n + r].conj() * w[i * n + k];
+        if sv[k] > 1e-14 {
+            let mut col = vec![cx(0.0, 0.0); n];
+            for r in 0..n {
+                let mut s = cx(0.0, 0.0);
+                for i in 0..n {
+                    s += y[i * n + r].conj() * w[i * n + k];
+                }
+                col[r] = s / sv[k];
             }
-            v[r * n + k] = if sv[k] > 1e-14 { s / sv[k] } else { cx(if r == k { 1.0 } else { 0.0 }, 0.0) };
+            for prev in 0..k {
+                if !valid[prev] {
+                    continue;
+                }
+                let ov: C = (0..n).map(|r| v[r * n + prev].conj() * col[r]).sum();
+                for r in 0..n {
+                    col[r] -= ov * v[r * n + prev];
+                }
+            }
+            let nn: f64 = col.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            if nn > 1e-12 {
+                for r in 0..n {
+                    v[r * n + k] = col[r] / nn;
+                }
+                valid[k] = true;
+            }
         }
+    }
+    for k in 0..n {
+        if valid[k] {
+            continue;
+        }
+        let mut best_col = vec![cx(0.0, 0.0); n];
+        let mut best_nrm = 0.0f64;
+        for cand in 0..n {
+            let mut col = vec![cx(0.0, 0.0); n];
+            col[cand] = cx(1.0, 0.0);
+            for prev in 0..n {
+                if !valid[prev] {
+                    continue;
+                }
+                let ov: C = (0..n).map(|r| v[r * n + prev].conj() * col[r]).sum();
+                for r in 0..n {
+                    col[r] -= ov * v[r * n + prev];
+                }
+            }
+            let nn: f64 = col.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            if nn > best_nrm {
+                best_nrm = nn;
+                best_col = col;
+            }
+        }
+        let nn = best_nrm.max(1e-300);
+        for r in 0..n {
+            v[r * n + k] = best_col[r] / nn;
+        }
+        valid[k] = true;
     }
     (sv, w, v)
 }
@@ -344,12 +395,17 @@ impl QuantumSpacetimeUniverse {
     }
 
     /// Enlace de un salto con sus fases: U₂, U₃ y e^{±iY·θ} de las cinco hipercargas.
+    /// Todas las hipercargas son múltiplos enteros de 1/6 (−1/2, −1, +1/6, +2/3, −1/3), por lo que
+    /// una sola evaluación trigonométrica `u1 = exp(i·sign·θ/6)` evita 5 llamadas a `sin_cos`.
     #[inline(always)]
     fn sm_hop_link(&self, l: usize, theta: f64, sign: f64, colour: bool) -> HopLink {
-        let mut ph = [cx(1.0, 0.0); 5];
-        for (k, f) in FIELDS.iter().enumerate() {
-            ph[k] = C::from_polar(1.0, sign * f.y * theta);
-        }
+        let u1 = C::from_polar(1.0, sign * theta / 6.0); // Y = +1/6
+        let u2 = u1 * u1;                                // Y = +1/3
+        let u3 = u2 * u1;                                // Y = +1/2
+        let u4 = u2 * u2;                                // Y = +2/3
+        let u6 = u3 * u3;                                // Y = +1
+        // FIELDS order: 0: L (Y=-1/2), 1: e_R (Y=-1), 2: Q_L (Y=+1/6), 3: u_R (Y=+2/3), 4: d_R (Y=-1/3)
+        let ph = [u3.conj(), u6.conj(), u1, u4, u2.conj()];
         HopLink { u2: self.ym.link(l), u3: if colour { Some(self.sm.ym3.link(l)) } else { None }, ph }
     }
 
@@ -533,7 +589,7 @@ impl QuantumSpacetimeUniverse {
             for _ in 0..s {
                 self.higgs_doublet_substep(dt);
             }
-            self.ym.reunit_counter += 1;
+            self.ym.reunit_counter = self.ym.reunit_counter.wrapping_add(1);
             if self.ym.reunit_counter % 100 == 0 {
                 for l in 0..dim * n {
                     let mut u = self.ym.link(l);
@@ -806,14 +862,18 @@ impl QuantumSpacetimeUniverse {
     /// de Higgs, con SU(3) (dinámico si `colour_dynamic`), SU(2) con g y U(1)_Y con g′. Valores por
     /// defecto de §3.19: λ = 0,02, v = 1, κ = 0,25, s = 2 y Yukawas 0,4, 0,3 y 0,5. 3D.
     pub fn set_scenario_sm(&mut self, generations: u32, quarks: bool, colour_dynamic: bool, g: f32, g_prime: f32, g_s: f32) {
+        self.message.clear();
         if self.dim != 3 {
             self.set_message("El escenario del modelo estándar es 3D.");
             return;
         }
-        if generations == 3 && self.n > 24 * 24 * 24 {
+        if generations >= 3 && self.n > 24 * 24 * 24 {
             self.set_message("Con tres generaciones la malla está limitada a 24³ (§2.22).");
             return;
         }
+        let g = crate::util::clamp_finite(g as f64, -10.0, 10.0, 0.6);
+        let g_prime = crate::util::clamp_finite(g_prime as f64, -10.0, 10.0, 0.4);
+        let g_s = crate::util::clamp_finite(g_s as f64, -10.0, 10.0, 0.8);
         if self.scenario != 6 {
             // los ajustes comunes del escenario (sin gravedad, sin espinores ni Kaplan…)
             self.set_scenario(6);
@@ -826,9 +886,9 @@ impl QuantumSpacetimeUniverse {
         sm.ng = ng;
         sm.quarks = quarks;
         sm.colour_dynamic = colour_dynamic;
-        sm.g = g as f64;
-        sm.gp = g_prime as f64;
-        sm.gs = g_s as f64;
+        sm.g = g;
+        sm.gp = g_prime;
+        sm.gs = g_s;
         sm.psi = vec![0.0; 2 * NGF * ng * n];
         sm.tmp = sm.psi.clone();
         // el campo de SU(3) solo se reserva con color dinámico (con el color fijo, U₃ = 1 y no se lee)
@@ -840,12 +900,13 @@ impl QuantumSpacetimeUniverse {
         self.ncol = 1;
         self.ym = YmField::new(2, self.dim, n);
         self.em = crate::em::EmField::new(self.w, self.h, self.d);
+        self.ensure_em_buffers();
         self.em.mode = 2;
         self.em.substeps = 2;
         self.em.kappa = 0.25;
-        self.higgs.g = g as f64;
-        self.higgs.gp = g_prime as f64;
-        self.em.q = 0.5 * g_prime as f64;
+        self.higgs.g = g;
+        self.higgs.gp = g_prime;
+        self.em.q = 0.5 * g_prime;
         self.higgs.v = 1.0;
         self.higgs.lambda = 0.02;
         self.higgs.mode = 2;
@@ -869,7 +930,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Yukawas (masas y·v en el vacío): en cada generación los mismos (0 = sin masa).
     pub fn set_yukawa_sm(&mut self, y_e: f32, y_d: f32, y_u: f32) {
-        if !self.sm.active {
+        if !self.sm.active || !(y_e.is_finite() && y_d.is_finite() && y_u.is_finite()) {
             return;
         }
         let ng = self.sm.ng;
@@ -886,12 +947,13 @@ impl QuantumSpacetimeUniverse {
     /// §2.22: tres generaciones con matrices de Yukawa complejas 3×3 (18 f32: re, im por filas). Se
     /// guarda su SVD para el paso.
     pub fn set_yukawa_matrices_sm(&mut self, y_e: &[f32], y_d: &[f32], y_u: &[f32]) {
+        self.message.clear();
         if !self.sm.active || self.sm.ng != 3 {
             self.set_message("Las matrices de Yukawa necesitan el escenario 6 con tres generaciones.");
             return;
         }
         for (sec, ym) in [y_e, y_d, y_u].into_iter().enumerate() {
-            if ym.len() < 18 {
+            if ym.len() < 18 || !ym[..18].iter().all(|v| v.is_finite()) {
                 continue;
             }
             let y: Vec<C> = (0..9).map(|k| cx(ym[2 * k] as f64, ym[2 * k + 1] as f64)).collect();
@@ -980,7 +1042,8 @@ impl QuantumSpacetimeUniverse {
         let det = comm.det();
         let pd = |s: &[f64]| (s[2] * s[2] - s[1] * s[1]) * (s[2] * s[2] - s[0] * s[0]) * (s[1] * s[1] - s[0] * s[0]);
         let pp = pd(&self.sm.ys[2]) * pd(&self.sm.ys[1]);
-        vec![det.im, 2.0 * self.sm.ckm[9] * pp, det.re, det.im / (2.0 * pp)]
+        let j_est = if pp.abs() > 1e-30 { det.im / (2.0 * pp) } else { 0.0 };
+        vec![det.im, 2.0 * self.sm.ckm[9] * pp, det.re, j_est]
     }
 
     /// Autoestados del operador de dos pasos en k (vacío Φ = (0, v), enlaces triviales): por cada uno,
@@ -1022,7 +1085,7 @@ impl QuantumSpacetimeUniverse {
                 [-l.arg() / 2.0, w[0] / tot, w[1] / tot, w[2] / tot, w[3] / tot]
             })
             .collect();
-        rows.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+        rows.sort_by(|a, b| a[0].total_cmp(&b[0]));
         rows.concat()
     }
 
@@ -1030,7 +1093,7 @@ impl QuantumSpacetimeUniverse {
     /// 6 = d_R; color para los quarks; primera generación; norma de `set_packet_norm`), con el espinor de la helicidad que le
     /// corresponde a su quiralidad en la dirección de k (−1 para L, +1 para R; espín arriba con k = 0).
     pub fn inject_sm_packet(&mut self, species: u32, x: f32, y: f32, z: f32, sigma: f32, kx: f32, ky: f32, kz: f32, colour: u32) {
-        if !self.sm.active {
+        if !self.sm.active || ![x, y, z, sigma, kx, ky, kz].iter().all(|v| v.is_finite()) {
             return;
         }
         let sp = (species as usize).min(6);
@@ -1117,6 +1180,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Centroide (media circular) de una especie en el eje.
     pub fn species_centroid(&self, species: u32, axis: u32) -> f64 {
+        if !self.sm.active {
+            return f64::NAN;
+        }
         let a = (axis as usize).min(2);
         let l = [self.w as f64, self.h as f64, self.d as f64][a];
         let (mut cs, mut sn) = (0.0, 0.0);
@@ -1223,7 +1289,15 @@ impl QuantumSpacetimeUniverse {
         let o2: Vec<Mat> = (0..n).map(|_| alg2.exp_minus_i(&[amp * rng.gauss(), amp * rng.gauss(), amp * rng.gauss()])).collect();
         // con el color fijo, los enlaces de SU(3) son la identidad y el salto no los lee: no se giran
         let amp3 = if self.sm.quarks && self.sm.colour_dynamic { amp } else { 0.0 };
-        let o3: Vec<Mat> = (0..n).map(|_| alg3.exp_minus_i(&(0..8).map(|_| amp3 * rng.gauss()).collect::<Vec<f64>>())).collect();
+        let o3: Vec<Mat> = (0..n)
+            .map(|_| {
+                let mut th = [0.0f64; 8];
+                for v in &mut th {
+                    *v = amp3 * rng.gauss();
+                }
+                alg3.exp_minus_i(&th)
+            })
+            .collect();
         let chi: Vec<f64> = (0..n).map(|_| amp * rng.gauss()).collect();
         let gp = self.sm.gp;
         let nt = self.sm_nt();
@@ -1319,7 +1393,7 @@ impl QuantumSpacetimeUniverse {
     /// y d_R, sumadas sobre isospín, color y espín) de dos universos. ν_L y e_L por separado no son
     /// invariantes: una transformación de SU(2) los mezcla.
     pub fn sm_density_distance(&self, other: &QuantumSpacetimeUniverse) -> f64 {
-        if other.n != self.n || !other.sm.active || other.sm.ng != self.sm.ng {
+        if !self.sm.active || !other.sm.active || other.n != self.n || other.sm.ng != self.sm.ng {
             return f64::NAN;
         }
         let mut d = 0.0f64;
@@ -1339,7 +1413,7 @@ impl QuantumSpacetimeUniverse {
         }
         let e = self.sm_two_step_eigen([kx as f64, ky as f64, kz as f64]);
         let mut v: Vec<f64> = e.values.iter().map(|l| -l.arg() / 2.0).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(f64::total_cmp);
         v
     }
 
@@ -1412,7 +1486,8 @@ impl QuantumSpacetimeUniverse {
         };
         let u_vecs: Vec<[C; 3]> = self.sm.ys[2].iter().map(|y| gen_vec(0, *y * self.higgs.v)).collect();
         let d_vecs: Vec<[C; 3]> = self.sm.ys[1].iter().map(|y| gen_vec(1, *y * self.higgs.v)).collect();
-        let s2w = self.sm.gp * self.sm.gp / (self.sm.g * self.sm.g + self.sm.gp * self.sm.gp);
+        let g2_sum = self.sm.g * self.sm.g + self.sm.gp * self.sm.gp;
+        let s2w = if g2_sum > 1e-30 { self.sm.gp * self.sm.gp / g2_sum } else { 0.0 };
         let gz_d = -0.5 + (1.0 / 3.0) * s2w;
         let gz_u = 0.5 - (2.0 / 3.0) * s2w;
         // Corriente neutra Z⁰ en la base de sabor: universal g_Z·I₃ → matriz en base de masas
@@ -1517,7 +1592,7 @@ impl QuantumSpacetimeUniverse {
     /// (`species`: 1 = e_L, 3 = u_L, 4 = d_L) rotado por W_sec a la base de sabor.
     #[allow(clippy::too_many_arguments)]
     pub fn inject_sm_mass_state(&mut self, species: u32, mass_gen: u32, x: f32, y: f32, z: f32, sigma: f32, kx: f32, ky: f32, kz: f32, colour: u32) {
-        if !self.sm.active {
+        if !self.sm.active || ![x, y, z, sigma, kx, ky, kz].iter().all(|v| v.is_finite()) {
             return;
         }
         let sp = (species as usize).min(6);

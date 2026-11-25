@@ -434,6 +434,8 @@ impl QuantumSpacetimeUniverse {
         self.sw.tmp = vec![0.0; len];
         self.sw.parts.clear();
         self.sw.part_centers.clear();
+        self.sw.mass_kind = 0;
+        self.sw.mass_cell.clear();
         if self.sw.ph.len() != 2 * self.dim * self.n {
             self.sw.ph = vec![0.0; 2 * self.dim * self.n];
         }
@@ -554,7 +556,13 @@ impl QuantumSpacetimeUniverse {
         }
         let track = self.sw.track_flux;
         let mut flux = [0.0f64; 3];
-        let mut pflux = vec![[0.0f64; 3]; if track { parts.len() } else { 0 }];
+        let mut pflux = std::mem::take(&mut self.sw.part_flux);
+        if track {
+            pflux.resize(parts.len(), [0.0; 3]);
+            pflux.fill([0.0; 3]);
+        } else {
+            pflux.clear();
+        }
         let nsub = self.sw.seq[parity].len();
         let distinct = self.sw.distinct && !parts.is_empty();
         for s in 0..nsub {
@@ -1002,7 +1010,7 @@ impl QuantumSpacetimeUniverse {
         }
         let p = self.sw.period() as f64;
         let mut v: Vec<f64> = eig(a, ns).values.iter().map(|l| -l.arg() / p).filter(|o| *o > 0.0).collect();
-        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v.sort_by(f64::total_cmp);
         v
     }
 
@@ -1024,20 +1032,24 @@ impl QuantumSpacetimeUniverse {
         }
         let p = self.sw_projector((self.t & 1) as usize, k0, band);
         let mut u = m4_apply(&p, &v);
-        let nn: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+        let mut nn: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
         if nn < 1e-6 {
-            // el espín pedido no tiene componente en la banda: se usa otra dirección
-            let alt = if self.sw.ns == 4 {
-                let off = if band >= 0 { 0 } else { 2 };
-                let mut w = [cx(0.0, 0.0); 4];
-                w[off + 1] = cx(1.0, 0.0);
-                w
-            } else {
-                [cx(0.0, 0.0), cx(1.0, 0.0), cx(0.0, 0.0), cx(0.0, 0.0)]
-            };
-            u = m4_apply(&p, &alt);
+            // El espín pedido no tiene componente en la banda: probar vectores de la base ortogonal
+            for cand in 0..self.sw.ns {
+                let mut alt = [cx(0.0, 0.0); 4];
+                alt[cand] = cx(1.0, 0.0);
+                let trial = m4_apply(&p, &alt);
+                let tn: f64 = trial.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+                if tn > nn {
+                    u = trial;
+                    nn = tn;
+                    if nn >= 1e-6 {
+                        break;
+                    }
+                }
+            }
         }
-        let nn: f64 = u.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt().max(1e-300);
+        let nn = nn.max(1e-300);
         for c in u.iter_mut() {
             *c /= nn;
         }
@@ -1407,6 +1419,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Centroide lineal de la parte p (o de todo el estado si p ≥ número de partes) en el eje.
     pub fn part_centroid(&self, p: u32, axis: u32) -> f64 {
+        if !self.sw.active {
+            return f64::NAN;
+        }
         let a = (axis as usize).min(2);
         let p = p as usize;
         if p < self.sw.parts.len() {
@@ -1449,6 +1464,9 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.active {
             return;
         }
+        if ![x, y, z, sigma, kx, ky, kz].iter().all(|v| v.is_finite()) || sigma <= 0.0 {
+            return;
+        }
         let col = if self.ncol > 1 { basis_colour(self.ncol, colour as usize % self.ncol) } else { [cx(1.0, 0.0), cx(0.0, 0.0), cx(0.0, 0.0)] };
         let c0 = [x as f64, y as f64, if self.dim == 3 { z as f64 } else { 0.0 }];
         let k0 = [kx as f64, ky as f64, if self.dim == 3 { kz as f64 } else { self.sw.kz }];
@@ -1464,6 +1482,9 @@ impl QuantumSpacetimeUniverse {
 
     /// ⟨Σ_a⟩/norma (a = 0, 1, 2) del estado (Dirac: Σ = 1⊗σ; Weyl: σ).
     pub fn spinor_spin(&self, axis: u32) -> f64 {
+        if !self.sw.active {
+            return 0.0;
+        }
         let s = self.sw_buffer_spin(&self.sw.psi);
         if s[3] > 0.0 {
             s[(axis as usize).min(2)] / s[3]
@@ -1493,12 +1514,18 @@ impl QuantumSpacetimeUniverse {
 
     /// ⟨∂²ω/∂k_a²⟩ del estado actual (la inercia del paquete).
     pub fn spinor_mean_curvature(&self, axis: u32) -> f64 {
+        if !self.sw.active {
+            return f64::NAN;
+        }
         self.sw_mean_curvature(&self.sw.psi, (axis as usize).min(2))
     }
 
     /// ⟨E_axis⟩ de una carga externa gaussiana (como `add_static_charge`: total `charge`, σ =
     /// `sigma`) resuelta con Poisson en el toro, promediado sobre la densidad actual del estado.
     pub fn static_charge_field_mean(&self, x: f32, y: f32, z: f32, charge: f32, sigma: f32, axis: u32) -> f64 {
+        if !self.sw.active || ![x, y, z, charge, sigma].iter().all(|v| v.is_finite()) {
+            return f64::NAN;
+        }
         let n = self.n;
         let c = self.wrap_cell(x as i32, y as i32, z as i32);
         let (cxp, cyp, czp) = self.coords(c);
@@ -1513,6 +1540,9 @@ impl QuantumSpacetimeUniverse {
             let dz = if self.dim == 3 { min_image(pz as f64 - czp as f64, dims[2]) } else { 0.0 };
             src[i] = (-(dx * dx + dy * dy + dz * dz) / (2.0 * s * s)).exp();
             tot += src[i];
+        }
+        if tot <= 1e-300 {
+            return 0.0;
         }
         for v in src.iter_mut() {
             *v *= charge as f64 / tot;
@@ -1599,6 +1629,9 @@ impl QuantumSpacetimeUniverse {
     /// Norma y centroide (media circular en el eje) de la parte del estado a menos de `radius` del
     /// eje (x₀, y₀) paralelo a z. Devuelve [norma, centroide].
     pub fn spinor_tube_stats(&self, x0: f32, y0: f32, radius: f32, axis: u32) -> Vec<f64> {
+        if !self.sw.active || !(x0.is_finite() && y0.is_finite() && radius.is_finite()) {
+            return vec![0.0, 0.0];
+        }
         let st_ = 2 * self.sw_namp();
         let (w, h, d) = (self.w as f64, self.h as f64, self.d as f64);
         let a = (axis as usize).min(2);

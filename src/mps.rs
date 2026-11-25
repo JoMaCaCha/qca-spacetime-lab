@@ -16,6 +16,8 @@
 //!    cadena cuántica interactuante (fermiones sin espín / modelo XXZ-Thirring) donde el acoplamiento
 //!    Δ modifica la velocidad efectiva del frente de correlación respecto al límite libre Δ = 0.
 
+use crate::linalg::complete_complex_isometry;
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use wasm_bindgen::prelude::*;
@@ -124,16 +126,18 @@ fn complex_svd_tall(a: &[C], m: usize, n: usize) -> (Vec<C>, Vec<f64>, Vec<C>) {
 
     let norms: Vec<f64> = (0..n).map(|j| cols[j].iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt()).collect();
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&i, &j| norms[j].partial_cmp(&norms[i]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&i, &j| norms[j].total_cmp(&norms[i]));
 
     let k = n;
     let mut u = vec![cx(0.0, 0.0); m * k];
     let mut s = vec![0.0f64; k];
     let mut vt = vec![cx(0.0, 0.0); k * n];
+    let mut rank = 0usize;
     for (idx, &col) in order.iter().enumerate() {
         let sig = norms[col];
         s[idx] = sig;
         if sig > 1e-15 {
+            rank += 1;
             let inv = 1.0 / sig;
             for i in 0..m {
                 u[i * k + idx] = cols[col][i] * inv;
@@ -142,6 +146,9 @@ fn complex_svd_tall(a: &[C], m: usize, n: usize) -> (Vec<C>, Vec<f64>, Vec<C>) {
         for j in 0..n {
             vt[idx * n + j] = vcols[col][j].conj();
         }
+    }
+    if rank < k {
+        complete_complex_isometry(&mut u, m, k, rank);
     }
     (u, s, vt)
 }
@@ -478,6 +485,9 @@ impl Mps {
 
     /// Entropía de entrelazamiento de von Neumann S_vN(cut) = −Σ λ² ln λ² en el enlace `cut`.
     pub fn entanglement_entropy(&self, cut: usize) -> f64 {
+        if self.bond_s.is_empty() {
+            return 0.0;
+        }
         let s = &self.bond_s[cut.min(self.bond_s.len() - 1)];
         let mut ent = 0.0;
         for &sv in s {
@@ -994,11 +1004,14 @@ impl QuantumSpacetimeUniverse {
     pub fn mps_schwinger_confinement(&self, l: u32, w: f32, m: f32, j_coup: f32, chi_max: u32) -> Vec<f64> {
         let n = (l as usize).clamp(8, 20) & !1;
         let chi = (chi_max as usize).clamp(4, 24);
-        let (e0, _, s0) = schwinger_ground_state(n, w as f64, m as f64, j_coup as f64, 0, chi, 28);
-        let (e2, _, _) = schwinger_ground_state(n, w as f64, m as f64, j_coup as f64, 2, chi, 28);
-        let (e4, ef4, s4) = schwinger_ground_state(n, w as f64, m as f64, j_coup as f64, 4, chi, 28);
+        let wf = clamp_finite(w as f64, 0.05, 5.0, 1.0);
+        let mf = clamp_finite(m as f64, -5.0, 5.0, 0.2);
+        let jf = clamp_finite(j_coup as f64, 0.0, 10.0, 0.5);
+        let (e0, _, s0) = schwinger_ground_state(n, wf, mf, jf, 0, chi, 28);
+        let (e2, _, _) = schwinger_ground_state(n, wf, mf, jf, 2, chi, 28);
+        let (e4, ef4, s4) = schwinger_ground_state(n, wf, mf, jf, 4, chi, 28);
         let d6 = 6.min(n - 2);
-        let (e6, _, _) = schwinger_ground_state(n, w as f64, m as f64, j_coup as f64, d6, chi, 28);
+        let (e6, _, _) = schwinger_ground_state(n, wf, mf, jf, d6, chi, 28);
         vec![e0, e2 - e0, e4 - e0, e6 - e0, s0, s4, ef4]
     }
 
@@ -1010,7 +1023,11 @@ impl QuantumSpacetimeUniverse {
         let n = (l as usize).clamp(8, 20) & !1;
         let chi = (chi_max as usize).clamp(4, 24);
         let st = (steps as usize).clamp(5, 200);
-        self.oq.out = schwinger_string_breaking_mps(n, w as f64, m as f64, j_coup as f64, dist as usize, chi, (dt as f64).clamp(0.01, 0.2), st);
+        let wf = clamp_finite(w as f64, 0.05, 5.0, 1.0);
+        let mf = clamp_finite(m as f64, -5.0, 5.0, 0.2);
+        let jf = clamp_finite(j_coup as f64, 0.0, 10.0, 0.5);
+        let dtf = clamp_finite(dt as f64, 0.01, 0.2, 0.05);
+        self.oq.out = schwinger_string_breaking_mps(n, wf, mf, jf, dist as usize, chi, dtf, st);
         self.oq.out.as_ptr()
     }
 
@@ -1021,6 +1038,9 @@ impl QuantumSpacetimeUniverse {
         let n = (l as usize).clamp(10, 24) & !1;
         let chi = (chi_max as usize).clamp(6, 24);
         let st = (steps as usize).clamp(10, 80);
-        mps_interacting_lightcone(n, w as f64, delta as f64, chi, (dt as f64).clamp(0.02, 0.2), st)
+        let wf = clamp_finite(w as f64, 0.05, 5.0, 1.0);
+        let df = clamp_finite(delta as f64, -5.0, 5.0, 0.0);
+        let dtf = clamp_finite(dt as f64, 0.02, 0.2, 0.05);
+        mps_interacting_lightcone(n, wf, df, chi, dtf, st)
     }
 }

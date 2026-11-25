@@ -4,6 +4,7 @@
 //! Golterman y Shamir, 2025) + escáner QCA de 4 componentes.
 
 use crate::rng::SplitMix64;
+use crate::util::{clamp_finite, fibonacci_sphere};
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -25,15 +26,7 @@ const E_PLANCK: f64 = 1.22089e19; // GeV
 ///   5: BCC de orden fijo (comprueba si BCC sin palíndromo también tiene asimetría CPT-impar n = 1)
 pub fn run_noncubic_lattice_lv_map() -> Vec<f64> {
     let ndirs = 400usize;
-    let golden = PI * (3.0 - 5.0f64.sqrt());
-    let dirs: Vec<[f64; 3]> = (0..ndirs)
-        .map(|i| {
-            let z = 1.0 - 2.0 * (i as f64 + 0.5) / ndirs as f64;
-            let r = (1.0 - z * z).max(0.0).sqrt();
-            let th = golden * i as f64;
-            [r * th.cos(), r * th.sin(), z]
-        })
-        .collect();
+    let dirs = fibonacci_sphere(ndirs);
 
     // Funciones de dispersión sin masa ω(k) = √(2 F(k)) para cada red palindrómica (con F(k) = k²/2 + O(k⁴))
     // y el producto de ejes para SC / BCC de orden fijo.
@@ -227,15 +220,7 @@ pub fn run_real_catalog_lv_likelihood(norients: usize) -> Vec<f64> {
     //    y acumulamos S(R) = Σ_{a ∈ j=3} (c_a(R) / σ_a)² (en unidades de (Δx/ℓ_P)⁻²),
     //    de modo que χ²_perfil(x) = x² · min_R S(R) exactamente!
     let ndirs = 400usize;
-    let golden = PI * (3.0 - 5.0f64.sqrt());
-    let dirs: Vec<[f64; 3]> = (0..ndirs)
-        .map(|i| {
-            let z = 1.0 - 2.0 * (i as f64 + 0.5) / ndirs as f64;
-            let r = (1.0 - z * z).max(0.0).sqrt();
-            let th = golden * i as f64;
-            [r * th.cos(), r * th.sin(), z]
-        })
-        .collect();
+    let dirs = fibonacci_sphere(ndirs);
     let wq = 4.0 * PI / ndirs as f64;
     // Extraemos las 7 entradas j = 3 de KK_TABLE_IV (1σ = lim_95 / 1,96)
     let j3_lims: Vec<(usize, bool, f64)> = KK_TABLE_IV
@@ -315,8 +300,9 @@ pub fn run_real_catalog_lv_likelihood(norients: usize) -> Vec<f64> {
     #[cfg(target_arch = "wasm32")]
     let (s_min, mut all_s) = eval_chunk(0, n_or);
 
-    all_s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let s_med = all_s[all_s.len() / 2];
+    all_s.sort_by(f64::total_cmp);
+    let s_med = all_s[all_s.len() / 2].max(1e-30);
+    let s_min = s_min.max(1e-30);
 
     // Cotas de exclusión de perfil χ² en la PEOR orientación de la red (conservadoras):
     //   95 % CL (1 dof, Δχ² = 3,8415) y 5σ (Δχ² = 25,0)
@@ -475,7 +461,7 @@ pub fn run_kaplan_sen_and_4comp_qca(l_slab: usize, m_bulk: f64) -> Vec<f64> {
     let kx0 = 0.15;
     let (ev0, vec0) = build_and_diag(kx0, 0.0, 0.0);
     let mut order: Vec<usize> = (0..dim).collect();
-    order.sort_by(|&i, &j| ev0[i].abs().partial_cmp(&ev0[j].abs()).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&i, &j| ev0[i].abs().total_cmp(&ev0[j].abs()));
     // Buscamos entre los 4 modos de borde el que vive en s = 0 (peso mayor en la primera mitad) con ω > 0
     let mut left_idx = order[0];
     let mut right_idx = order[0];
@@ -587,7 +573,8 @@ impl QuantumSpacetimeUniverse {
     /// en la frontera abierta de una red finita 4+1D (localización exponencial, desaparición de los
     /// 7 dobladores y suma de quiralidad total = 0 en el contorno cerrado) + QCA 3D de 4 componentes.
     pub fn chiral_4comp_kaplan_sen_test(&mut self, l_slab: u32, m_bulk: f32) -> *const f64 {
-        self.oq.out = run_kaplan_sen_and_4comp_qca(l_slab as usize, m_bulk as f64);
+        let m = clamp_finite(m_bulk as f64, 0.15, 0.85, 0.45);
+        self.oq.out = run_kaplan_sen_and_4comp_qca(l_slab as usize, m);
         self.oq.out.as_ptr()
     }
 }

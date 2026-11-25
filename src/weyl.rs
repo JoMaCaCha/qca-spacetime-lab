@@ -9,6 +9,7 @@ use crate::fftn::wavenumber;
 use crate::rng::SplitMix64;
 use crate::spinor::{cx, M4};
 use crate::sun::C;
+use crate::util::wrap_angle;
 use crate::QuantumSpacetimeUniverse;
 use rustfft::num_complex::Complex;
 use std::f64::consts::PI;
@@ -32,16 +33,6 @@ fn m2_mul(a: &M2, b: &M2) -> M2 {
 
 fn m2_dag(a: &M2) -> M2 {
     [[a[0][0].conj(), a[1][0].conj()], [a[0][1].conj(), a[1][1].conj()]]
-}
-
-fn wrapf(a: f64) -> f64 {
-    let mut a = a % (2.0 * PI);
-    if a > PI {
-        a -= 2.0 * PI;
-    } else if a <= -PI {
-        a += 2.0 * PI;
-    }
-    a
 }
 
 impl QuantumSpacetimeUniverse {
@@ -142,7 +133,7 @@ impl QuantumSpacetimeUniverse {
             let step = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
             let s = if step > 0.5 { 0.5 / step } else { 1.0 };
             for c in 0..3 {
-                k[c] = wrapf(k[c] + s * dx[c]);
+                k[c] = wrap_angle(k[c] + s * dx[c]);
             }
         }
         None
@@ -179,9 +170,10 @@ impl QuantumSpacetimeUniverse {
         aux.set_scenario(3);
         aux.sw.variant = self.sw.variant;
         aux.sw.rebuild();
-        if self.em.mode != 0 {
+        if self.em.mode != 0 && self.em.a.len() >= self.dim * self.n {
             aux.em.mode = 1;
             aux.em.q = self.em.q;
+            aux.ensure_em_buffers();
             for a in 0..2 {
                 for p in 0..plane {
                     aux.em.a[a * plane + p] = self.em.a[a * self.n + p];
@@ -198,7 +190,7 @@ impl QuantumSpacetimeUniverse {
         let mut tmp = vec![0.0f64; plane * 2 * namp];
         for j in 0..d {
             let kz = wavenumber(j, d);
-            let eps_c = chirality as f64 * wrapf(kz - knode[2]);
+            let eps_c = chirality as f64 * wrap_angle(kz - knode[2]);
             aux.sw.kz = kz;
             let mut psi = vec![0.0f64; plane * 2 * namp];
             for p in 0..plane {
@@ -264,7 +256,7 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.weyl {
             return f64::NAN;
         }
-        self.weyl_w3((grid.max(4) as usize) & !1, half_zone)
+        self.weyl_w3((grid.clamp(4, 128) as usize) & !1, half_zone)
     }
 
     /// Nodos de F (a = 0) en la zona cúbica, por Newton desde `seeds` semillas aleatorias,
@@ -275,6 +267,7 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.weyl {
             return Vec::new();
         }
+        let seeds = seeds.min(4096);
         let mut rng = SplitMix64::new(seed as u64 ^ 0x9E3779B9);
         let mut found: Vec<[f64; 5]> = Vec::new();
         for _ in 0..seeds {
@@ -287,13 +280,19 @@ impl QuantumSpacetimeUniverse {
                 let a0 = self.weyl_a(k)[0];
                 let sector = if a0 > 0.0 { 0.0 } else { PI };
                 let chir = if a0 > 0.0 { det.signum() } else { -det.signum() };
-                let dup = found.iter().any(|f| (0..3).all(|c| wrapf(f[c] - k[c]).abs() < 1e-6));
+                let dup = found.iter().any(|f| (0..3).all(|c| wrap_angle(f[c] - k[c]).abs() < 1e-6));
                 if !dup {
-                    found.push([wrapf(k[0]), wrapf(k[1]), wrapf(k[2]), sector, chir]);
+                    found.push([wrap_angle(k[0]), wrap_angle(k[1]), wrap_angle(k[2]), sector, chir]);
                 }
             }
         }
-        found.sort_by(|a, b| (a[3], a[4], a[0], a[1], a[2]).partial_cmp(&(b[3], b[4], b[0], b[1], b[2])).unwrap());
+        found.sort_by(|a, b| {
+            a[3].total_cmp(&b[3])
+                .then_with(|| a[4].total_cmp(&b[4]))
+                .then_with(|| a[0].total_cmp(&b[0]))
+                .then_with(|| a[1].total_cmp(&b[1]))
+                .then_with(|| a[2].total_cmp(&b[2]))
+        });
         found.into_iter().flatten().collect()
     }
 
@@ -302,12 +301,16 @@ impl QuantumSpacetimeUniverse {
     /// quiralidad χ (ventana |ε − ε_c| < half_width, T = steps pasos a cada lado). Usa el espín de
     /// `set_packet_spin` y la norma de `set_packet_norm`.
     pub fn inject_weyl_chiral_packet(&mut self, x: f32, y: f32, z: f32, sigma: f32, kx: f32, ky: f32, kz: f32, chirality: i32, half_width: f32, steps: u32) {
+        self.message.clear();
         if !self.sw.active || !self.sw.weyl || self.dim != 3 || self.sw.variant == 1 {
             self.set_message("El filtro de la rama quiral necesita el escenario Weyl 3D con orden fijo o bombeos.");
             return;
         }
+        if ![x, y, z, sigma, kx, ky, kz, half_width].iter().all(|v| v.is_finite()) || sigma <= 0.0 || half_width <= 0.0 {
+            return;
+        }
         let c0 = [x as f64, y as f64, z as f64];
-        let (b, _) = self.weyl_filtered_packet(c0, sigma as f64, [kx as f64, ky as f64, kz as f64], chirality.signum(), half_width as f64, steps.max(8) as usize);
+        let (b, _) = self.weyl_filtered_packet(c0, sigma as f64, [kx as f64, ky as f64, kz as f64], chirality.signum(), half_width as f64, steps.clamp(8, 200_000) as usize);
         self.sw_add_buffer(b, c0);
     }
 
@@ -317,8 +320,11 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.active || !self.sw.weyl || self.dim != 3 || self.sw.variant == 1 {
             return f64::NAN;
         }
+        if ![x, y, z, sigma, kx, ky, kz, half_width].iter().all(|v| v.is_finite()) || sigma <= 0.0 || half_width <= 0.0 {
+            return f64::NAN;
+        }
         let c0 = [x as f64, y as f64, z as f64];
-        self.weyl_filtered_packet(c0, sigma as f64, [kx as f64, ky as f64, kz as f64], chirality.signum(), half_width as f64, steps.max(8) as usize).1
+        self.weyl_filtered_packet(c0, sigma as f64, [kx as f64, ky as f64, kz as f64], chirality.signum(), half_width as f64, steps.clamp(8, 200_000) as usize).1
     }
 
     /// Rama adiabática exacta del escenario Weyl en 2D (k_z fijo, con el campo estático actual): se
@@ -331,7 +337,15 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.weyl || self.dim != 2 || self.sw.variant == 1 {
             return Vec::new();
         }
-        let n2 = 2 * self.n;
+        if !(kz0.is_finite() && kz1.is_finite() && dk.is_finite() && eps0.is_finite()) {
+            return Vec::new();
+        }
+        let Some(n2) = self.n.checked_mul(2) else {
+            return Vec::new();
+        };
+        if n2 == 0 || n2 > 1024 || n2.checked_mul(n2).is_none() {
+            return Vec::new();
+        }
         let saved = self.sw.kz;
         if self.em.mode != 0 {
             self.sw_refresh_phases();
@@ -383,13 +397,17 @@ impl QuantumSpacetimeUniverse {
         let mut out = Vec::new();
         let (k0, k1) = (kz0 as f64, kz1 as f64);
         let e = spectrum(self, k0);
-        let i0 = (0..n2).min_by(|&i, &j| (-e.values[i].arg() - eps0 as f64).abs().partial_cmp(&(-e.values[j].arg() - eps0 as f64).abs()).unwrap()).unwrap();
+        let i0 = (0..n2)
+            .min_by(|&i, &j| (-e.values[i].arg() - eps0 as f64).abs().total_cmp(&(-e.values[j].arg() - eps0 as f64).abs()))
+            .unwrap();
         let mut prev = e.vectors[i0].clone();
         out.extend([k0, -e.values[i0].arg(), 1.0]);
         let (dk, dir) = ((dk as f64).abs().max(1e-4), if k1 >= k0 { 1.0 } else { -1.0 });
         let mut kz = k0;
         let mut h = dk;
-        while (k1 - kz) * dir > 1e-9 {
+        let mut iters = 0usize;
+        while (k1 - kz) * dir > 1e-9 && iters < 200_000 {
+            iters += 1;
             let step = h.min((k1 - kz).abs());
             let e = spectrum(self, kz + dir * step);
             let mut best = (0usize, 0.0f64);
@@ -421,7 +439,16 @@ impl QuantumSpacetimeUniverse {
         if !self.sw.weyl || self.dim != 2 || self.sw.variant == 1 {
             return Vec::new();
         }
-        let n2 = 2 * self.n;
+        if !(kz0.is_finite() && rate.is_finite()) {
+            return Vec::new();
+        }
+        let Some(n2) = self.n.checked_mul(2) else {
+            return Vec::new();
+        };
+        if n2 == 0 || n2 > 1024 || n2.checked_mul(n2).is_none() {
+            return Vec::new();
+        }
+        let steps = steps.min(200_000);
         if self.em.mode != 0 {
             self.sw_refresh_phases();
         }
@@ -437,7 +464,9 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let e = crate::linalg::eig(a, n2);
-        let i0 = (0..n2).min_by(|&i, &j| (-e.values[i].arg() - kz0 as f64).abs().partial_cmp(&(-e.values[j].arg() - kz0 as f64).abs()).unwrap()).unwrap();
+        let i0 = (0..n2)
+            .min_by(|&i, &j| (-e.values[i].arg() - kz0 as f64).abs().total_cmp(&(-e.values[j].arg() - kz0 as f64).abs()))
+            .unwrap();
         for (k, c) in e.vectors[i0].iter().enumerate() {
             self.sw.psi[2 * k] = c.re;
             self.sw.psi[2 * k + 1] = c.im;
@@ -461,6 +490,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Anchura en el eje: √⟨(x − x̄)²⟩ con x̄ la media circular (el paquete puede cruzar la costura).
     pub fn spinor_width(&self, axis: u32) -> f64 {
+        if !self.sw.active {
+            return 0.0;
+        }
         let a = (axis as usize).min(2);
         let l = [self.w as f64, self.h as f64, self.d as f64][a];
         let st = 2 * self.sw_namp();

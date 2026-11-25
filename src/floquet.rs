@@ -188,18 +188,25 @@ impl QuantumSpacetimeUniverse {
     /// Pone una partícula (norma 1) en el sitio (x, y).
     pub fn floquet_inject(&mut self, x: u32, y: u32) {
         let f = &mut self.flq;
-        if !f.active {
+        if !f.active || f.l == 0 {
+            return;
+        }
+        let (x, y) = ((x as usize).min(f.l - 1), (y as usize).min(f.l - 1));
+        let idx = y * f.l + x;
+        if !f.mask[idx] {
             return;
         }
         f.psi.iter_mut().for_each(|z| *z = Complex::new(0.0, 0.0));
-        let (x, y) = ((x as usize).min(f.l - 1), (y as usize).min(f.l - 1));
-        f.psi[y * f.l + x] = Complex::new(1.0, 0.0);
+        f.psi[idx] = Complex::new(1.0, 0.0);
         f.periods = 0;
     }
 
     /// Avanza `periods` períodos.
     pub fn floquet_periods(&mut self, periods: u32) {
-        for _ in 0..periods {
+        if !self.flq.active || self.flq.l == 0 {
+            return;
+        }
+        for _ in 0..periods.min(50_000) {
             self.flq.period();
         }
     }

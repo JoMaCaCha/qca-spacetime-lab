@@ -59,14 +59,12 @@ pub fn eigvec2(u: &M2, lam: C64) -> [C64; 2] {
     let b = u[0][1];
     let cc = u[1][0];
     let d = u[1][1] - lam;
-    // (a b; c d)·v = 0
-    let v = if b.norm() > 1e-12 || a.norm() > 1e-12 {
-        if b.norm() >= a.norm() {
-            [b, -a]
-        } else {
-            [b, -a]
-        }
-    } else if cc.norm() > 1e-12 || d.norm() > 1e-12 {
+    // (a b; c d)·v = 0: elegir la fila de mayor norma para mejor condicionamiento
+    let r0 = a.norm_sqr() + b.norm_sqr();
+    let r1 = cc.norm_sqr() + d.norm_sqr();
+    let v = if r0 >= r1 && r0 > 1e-24 {
+        [b, -a]
+    } else if r1 > 1e-24 {
         [d, -cc]
     } else {
         [c(1.0, 0.0), c(0.0, 0.0)]
@@ -116,8 +114,11 @@ impl QuantumSpacetimeUniverse {
         let s = FRAC_1_SQRT_2 as f32;
         let gauge = self.em.mode != 0;
         let dynamic = self.em.mode == 2;
-        if gauge && !self.em.ph_valid {
-            self.em_refresh_phases();
+        if gauge {
+            self.ensure_em_buffers();
+            if !self.em.ph_valid {
+                self.em_refresh_phases();
+            }
         }
         let ph = std::mem::take(&mut self.em.ph);
         if dynamic {
@@ -260,6 +261,11 @@ impl QuantumSpacetimeUniverse {
         }
         let amp = 1.0 / norm.sqrt();
         let (ax, ay) = self.packet_gauge_phase(x0, y0);
+        let nco = self.ncol.max(1);
+        let stride = self.stride();
+        if self.buffer_read.len() < self.w * self.h * stride {
+            return;
+        }
         for i in 0..self.w * self.h {
             let (x, y, _) = self.coords(i);
             let dx = min_image(x as f64 - x0, w);
@@ -269,11 +275,12 @@ impl QuantumSpacetimeUniverse {
             }
             let e = amp * (-(dx * dx + dy * dy) / (2.0 * sigma * sigma)).exp();
             let ph = C64::from_polar(e, (kx + ax) * dx + (ky + ay) * dy);
-            let b = i * 4;
+            let b = i * stride;
             for comp in 0..2 {
                 let v = ph * spinor[comp];
-                self.buffer_read[b + 2 * comp] += v.re as f32;
-                self.buffer_read[b + 2 * comp + 1] += v.im as f32;
+                let o = b + 2 * (comp * nco);
+                self.buffer_read[o] += v.re as f32;
+                self.buffer_read[o + 1] += v.im as f32;
             }
         }
     }
@@ -281,7 +288,7 @@ impl QuantumSpacetimeUniverse {
     /// q·A(r₀) promediado en los enlaces de la celda central (paquetes con momento cinético, §2.10):
     /// la envolvente se multiplica por e^{iq·A(r₀)·(r − r₀)}.
     pub(crate) fn packet_gauge_phase(&self, x0: f64, y0: f64) -> (f64, f64) {
-        if self.em.mode == 0 {
+        if self.em.mode == 0 || self.em.a.len() < 2 * self.n {
             return (0.0, 0.0);
         }
         let c = self.wrap_cell(x0.round() as i32, y0.round() as i32, 0);
@@ -298,6 +305,7 @@ impl QuantumSpacetimeUniverse {
     /// Paquete gaussiano de Dirac (norma 1) con el espinor propio de U(k₀) de la banda ±1, o el
     /// espinor ↑ puro con band = 0 (mezcla las dos bandas: Zitterbewegung). Escenario Dirac 2D.
     pub fn inject_dirac_packet(&mut self, x: f32, y: f32, sigma: f32, kx: f32, ky: f32, band: i32) {
+        self.message.clear();
         if self.scenario != 2 || self.dim != 2 {
             self.set_message("inject_dirac_packet necesita el escenario Dirac en 2D.");
             return;
@@ -310,27 +318,42 @@ impl QuantumSpacetimeUniverse {
 
     /// Cuasi-energía positiva de la banda +1 del paso de Dirac 2D en k, con la masa actual.
     pub fn dirac_dispersion(&self, kx: f32, ky: f32) -> f64 {
+        if !(kx.is_finite() && ky.is_finite()) {
+            return f64::NAN;
+        }
         dirac2d_omega(self.mass as f64, kx as f64, ky as f64)
     }
 
     /// Fase de Berry de la banda +1 en un círculo |k| = radius (lazo de Wilson con `points` puntos).
     pub fn dirac_berry_phase(&self, radius: f32, points: u32) -> f64 {
-        dirac2d_berry(self.mass as f64, radius as f64, points.max(8) as usize)
+        if !radius.is_finite() {
+            return f64::NAN;
+        }
+        dirac2d_berry(self.mass as f64, radius as f64, points.clamp(8, 100_000) as usize)
     }
 
     /// ⟨σ_a⟩ total (a = 0: x, 1: y, 2: z) del espinor de Dirac 2D (normalizado por la norma).
     pub fn dirac_spin(&self, axis: u32) -> f64 {
+        let nco = self.ncol.max(1);
+        let stride = self.stride();
+        if self.nc < 2 || self.buffer_read.len() < self.w * self.h * stride {
+            return 0.0;
+        }
         let (mut s, mut n) = (0.0f64, 0.0f64);
         for i in 0..self.w * self.h {
-            let b = i * 4;
-            let u = c(self.buffer_read[b] as f64, self.buffer_read[b + 1] as f64);
-            let d = c(self.buffer_read[b + 2] as f64, self.buffer_read[b + 3] as f64);
-            n += u.norm_sqr() + d.norm_sqr();
-            s += match axis {
-                0 => 2.0 * (u.conj() * d).re,
-                1 => 2.0 * (u.conj() * d).im,
-                _ => u.norm_sqr() - d.norm_sqr(),
-            };
+            let b = i * stride;
+            for a in 0..nco {
+                let ou = b + 2 * a;
+                let od = b + 2 * (nco + a);
+                let u = c(self.buffer_read[ou] as f64, self.buffer_read[ou + 1] as f64);
+                let d = c(self.buffer_read[od] as f64, self.buffer_read[od + 1] as f64);
+                n += u.norm_sqr() + d.norm_sqr();
+                s += match axis {
+                    0 => 2.0 * (u.conj() * d).re,
+                    1 => 2.0 * (u.conj() * d).im,
+                    _ => u.norm_sqr() - d.norm_sqr(),
+                };
+            }
         }
         if n > 0.0 {
             s / n

@@ -12,6 +12,9 @@ pub(crate) const CAP_TOLERANCE: f32 = 5e-7;
 /// `psi` contiene n_c pares (Re, Im).
 #[inline(always)]
 pub fn apply_coin(psi: &mut [f32], nc: usize, cos_m: f32, sin_m: f32) {
+    if nc == 0 || psi.len() < 2 * nc {
+        return;
+    }
     let f = 2.0 / nc as f32;
     let (mut sr, mut si) = (0.0f32, 0.0f32);
     for k in 0..nc {
@@ -61,28 +64,31 @@ impl QuantumSpacetimeUniverse {
         let psi = &self.buffer_read;
         let n = self.n;
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-        unsafe {
-            use core::arch::wasm32::*;
-            let v_one = f32x4_splat(1.0);
-            let v_inv = f32x4_splat(inv);
-            let mut i = 0usize;
-            let out_ptr = self.e_eff.as_mut_ptr();
-            while i + 4 <= n {
-                let e0 = pair_sum_sq::<NC>(&psi[i * stride..(i + 1) * stride]);
-                let e1 = pair_sum_sq::<NC>(&psi[(i + 1) * stride..(i + 2) * stride]);
-                let e2 = pair_sum_sq::<NC>(&psi[(i + 2) * stride..(i + 3) * stride]);
-                let e3 = pair_sum_sq::<NC>(&psi[(i + 3) * stride..(i + 4) * stride]);
-                let ev = f32x4(e0, e1, e2, e3);
-                let eff = f32x4_div(ev, f32x4_add(v_one, f32x4_mul(ev, v_inv)));
-                v128_store(out_ptr.add(i) as *mut v128, eff);
-                i += 4;
+        {
+            assert!(self.e_eff.len() >= n && psi.len() >= n * stride);
+            unsafe {
+                use core::arch::wasm32::*;
+                let v_one = f32x4_splat(1.0);
+                let v_inv = f32x4_splat(inv);
+                let mut i = 0usize;
+                let out_ptr = self.e_eff.as_mut_ptr();
+                while i + 4 <= n {
+                    let e0 = pair_sum_sq::<NC>(&psi[i * stride..(i + 1) * stride]);
+                    let e1 = pair_sum_sq::<NC>(&psi[(i + 1) * stride..(i + 2) * stride]);
+                    let e2 = pair_sum_sq::<NC>(&psi[(i + 2) * stride..(i + 3) * stride]);
+                    let e3 = pair_sum_sq::<NC>(&psi[(i + 3) * stride..(i + 4) * stride]);
+                    let ev = f32x4(e0, e1, e2, e3);
+                    let eff = f32x4_div(ev, f32x4_add(v_one, f32x4_mul(ev, v_inv)));
+                    v128_store(out_ptr.add(i) as *mut v128, eff);
+                    i += 4;
+                }
+                while i < n {
+                    let e = pair_sum_sq::<NC>(&psi[i * stride..(i + 1) * stride]);
+                    self.e_eff[i] = e / (1.0 + e * inv);
+                    i += 1;
+                }
+                return;
             }
-            while i < n {
-                let e = pair_sum_sq::<NC>(&psi[i * stride..(i + 1) * stride]);
-                self.e_eff[i] = e / (1.0 + e * inv);
-                i += 1;
-            }
-            return;
         }
         #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
         for (i, out) in self.e_eff.iter_mut().enumerate().take(n) {
@@ -146,6 +152,11 @@ impl QuantumSpacetimeUniverse {
         #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
         if !self.has_walls && w >= 6 {
             use core::arch::wasm32::*;
+            assert!(
+                self.e_eff.len() >= self.n
+                    && self.potential.len() >= self.n
+                    && self.buffer_read.len() >= self.n * stride
+            );
             let g_v = f32x4_splat(self.g);
             let c_own = f32x4_splat(self.g * (1.0 - self.alpha));
             let c_nb = f32x4_splat(self.g * self.alpha / NC as f32);
@@ -153,7 +164,6 @@ impl QuantumSpacetimeUniverse {
             let has_pot = self.has_potential;
             let e_ptr = self.e_eff.as_ptr();
             let pot_ptr = self.potential.as_ptr();
-            let wh = w * h;
             for z in 0..d {
                 let zm = if z == 0 { d - 1 } else { z - 1 };
                 let zp = if z + 1 == d { 0 } else { z + 1 };
@@ -235,7 +245,6 @@ impl QuantumSpacetimeUniverse {
                     }
                 }
             }
-            let _ = wh;
             return;
         }
 
@@ -384,7 +393,7 @@ impl QuantumSpacetimeUniverse {
             self.cap_flag[i] = 0;
             self.cap_touch(i, stride);
             let e = self.shadow_energy(i, stride);
-            if e <= cap_hi {
+            if !e.is_finite() || e <= cap_hi {
                 continue;
             }
             iters += 1;
@@ -417,7 +426,8 @@ impl QuantumSpacetimeUniverse {
             }
             let mut count = 0usize;
             for k in 0..NC {
-                if !(self.has_walls && self.wall[nbrs[k]] != 0) {
+                let j = nbrs[k];
+                if j != i && !(self.has_walls && self.wall[j] != 0) {
                     count += 1;
                 }
             }
@@ -433,7 +443,7 @@ impl QuantumSpacetimeUniverse {
             }
             for k in 0..NC {
                 let j = nbrs[k];
-                if self.has_walls && self.wall[j] != 0 {
+                if j == i || (self.has_walls && self.wall[j] != 0) {
                     continue;
                 }
                 self.cap_touch(j, stride);

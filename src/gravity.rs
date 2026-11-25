@@ -41,32 +41,18 @@ pub struct Gravity {
 }
 
 impl Gravity {
-    pub fn new(w: usize, h: usize, d: usize) -> Self {
-        let n = w * h * d;
-        let mut kernel = vec![0.0f32; n];
-        for z in 0..d {
-            for y in 0..h {
-                for x in 0..w {
-                    let i = (z * h + y) * w + x;
-                    let mut lam = 2.0 * (1.0 - (2.0 * PI * x as f64 / w as f64).cos()) + 2.0 * (1.0 - (2.0 * PI * y as f64 / h as f64).cos());
-                    if d > 1 {
-                        lam += 2.0 * (1.0 - (2.0 * PI * z as f64 / d as f64).cos());
-                    }
-                    kernel[i] = if lam > 1e-12 { (4.0 * PI / lam) as f32 } else { 0.0 };
-                }
-            }
-        }
+    pub fn new(_w: usize, _h: usize, _d: usize) -> Self {
         Gravity {
             mode: 0,
             gamma: 1e-6,
             cg: 0.5,
             eta: 0.02,
-            phi: vec![0.0; n],
-            phi_prev: vec![0.0; n],
-            phi_ext: vec![0.0; n],
+            phi: Vec::new(),
+            phi_prev: Vec::new(),
+            phi_ext: Vec::new(),
             has_ext: false,
-            poisson_kernel: kernel,
-            gbuf: vec![Complex::new(0.0, 0.0); n],
+            poisson_kernel: Vec::new(),
+            gbuf: Vec::new(),
             phi_min: 0.0,
             phi_max: 0.0,
             exp_on: false,
@@ -91,8 +77,60 @@ impl Gravity {
 }
 
 impl QuantumSpacetimeUniverse {
+    /// Reserva de forma diferida los búferes del modo gravedad y el núcleo de Poisson.
+    pub(crate) fn ensure_gravity_buffers(&mut self) {
+        let n = self.n;
+        if self.grav.phi.len() != n {
+            self.grav.phi.resize(n, 0.0);
+        }
+        if self.grav.phi_prev.len() != n {
+            self.grav.phi_prev.resize(n, 0.0);
+        }
+        if self.grav.phi_ext.len() != n {
+            self.grav.phi_ext.resize(n, 0.0);
+        }
+        if self.grav.gbuf.len() != n {
+            self.grav.gbuf.resize(n, Complex::new(0.0, 0.0));
+        }
+        if self.grav.poisson_kernel.len() != n {
+            let (w, h, d) = (self.w, self.h, self.d);
+            let mut kernel = vec![0.0f32; n];
+            for z in 0..d {
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = (z * h + y) * w + x;
+                        let mut lam = 2.0 * (1.0 - (2.0 * PI * x as f64 / w as f64).cos())
+                            + 2.0 * (1.0 - (2.0 * PI * y as f64 / h as f64).cos());
+                        if d > 1 {
+                            lam += 2.0 * (1.0 - (2.0 * PI * z as f64 / d as f64).cos());
+                        }
+                        kernel[i] = if lam > 1e-12 { (4.0 * PI / lam) as f32 } else { 0.0 };
+                    }
+                }
+            }
+            self.grav.poisson_kernel = kernel;
+        }
+    }
+
+    fn update_phi_minmax(&mut self) {
+        if self.grav.mode == 0 && !self.grav.has_ext {
+            self.grav.phi_min = 0.0;
+            self.grav.phi_max = 0.0;
+            return;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for i in 0..self.n {
+            let p = self.phi_total(i);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        self.grav.phi_min = if lo.is_finite() { lo } else { 0.0 };
+        self.grav.phi_max = if hi.is_finite() { hi } else { 0.0 };
+    }
+
     /// Resuelve −∇²_red Φ = 4π(ρ − ⟨ρ⟩) por FFT para la densidad `rho` (N_celdas) y deja Φ en `out`.
     pub(crate) fn poisson_solve(&mut self, rho_source: PoissonSource, out_ext: bool) {
+        self.ensure_gravity_buffers();
         let n = self.n;
         let mut buf = std::mem::take(&mut self.grav.gbuf);
         match rho_source {
@@ -114,6 +152,10 @@ impl QuantumSpacetimeUniverse {
                     let e = (-r2 / (2.0 * sigma * sigma)).exp();
                     tot += e;
                     *v = Complex::new(e as f32, 0.0);
+                }
+                if !tot.is_finite() || tot <= 0.0 {
+                    self.grav.gbuf = buf;
+                    return;
                 }
                 let s = (mass / tot) as f32;
                 let mean = (mass / n as f64) as f32;
@@ -148,14 +190,7 @@ impl QuantumSpacetimeUniverse {
             _ => {}
         }
         if self.grav.mode != 0 {
-            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-            for i in 0..self.n {
-                let p = self.grav.phi[i] + if self.grav.has_ext { self.grav.phi_ext[i] } else { 0.0 };
-                lo = lo.min(p);
-                hi = hi.max(p);
-            }
-            self.grav.phi_min = lo;
-            self.grav.phi_max = hi;
+            self.update_phi_minmax();
         }
         if self.grav.exp_on && !self.grav.exp_stopped {
             self.grav.exp_tau += 1.0;
@@ -176,6 +211,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Variante onda: integrador de dos niveles con amortiguamiento η, local y causal.
     fn gravity_wave_step(&mut self) {
+        self.ensure_gravity_buffers();
         let (w, h, d) = (self.w, self.h, self.d);
         let mean = self.mean_density() as f32;
         let c2 = self.grav.cg * self.grav.cg;
@@ -211,8 +247,8 @@ impl QuantumSpacetimeUniverse {
     /// Φ total en la celda i (dinámico + externo).
     #[inline(always)]
     pub(crate) fn phi_total(&self, i: usize) -> f32 {
-        let mut p = if self.grav.mode != 0 { self.grav.phi[i] } else { 0.0 };
-        if self.grav.has_ext {
+        let mut p = if self.grav.mode != 0 && i < self.grav.phi.len() { self.grav.phi[i] } else { 0.0 };
+        if self.grav.has_ext && i < self.grav.phi_ext.len() {
             p += self.grav.phi_ext[i];
         }
         p
@@ -222,12 +258,16 @@ impl QuantumSpacetimeUniverse {
     /// espectral): H = k²/(2m\*) + V − g·f(ρ) − γ·Φ, con Φ de Poisson (si la gravedad está activa).
     /// Parte del campo actual (proyectado sobre el espinor simétrico) y conserva su norma.
     pub(crate) fn imaginary_time_relax(&mut self, iterations: u32, dtau: f64) {
+        if !dtau.is_finite() || dtau <= 0.0 {
+            return;
+        }
+        let iterations = iterations.min(10_000);
         let n = self.n;
-        let nc = self.nc;
-        let stride = 2 * nc;
+        let namp = self.namp();
+        let stride = self.stride();
         let m_star = self.band_mass().max(1e-6);
-        let inv_sqrt = 1.0 / (nc as f64).sqrt();
-        // φ = Σψ/√n_c en un búfer complejo f64 propio (solo se usa aquí, fuera de step)
+        let inv_sqrt = 1.0 / (namp.max(1) as f64).sqrt();
+        // φ = Σψ/√(n_c·N) en un búfer complejo f64 propio (solo se usa aquí, fuera de step)
         let mut phi: Vec<Complex<f64>> = (0..n)
             .map(|i| {
                 let (sr, si) = self.sum_psi_at(i);
@@ -235,7 +275,7 @@ impl QuantumSpacetimeUniverse {
             })
             .collect();
         let norm0: f64 = phi.iter().map(|v| v.norm_sqr()).sum();
-        if norm0 <= 0.0 {
+        if norm0 <= 0.0 || !norm0.is_finite() {
             return;
         }
         let mut fft = crate::fftn::FftN::<f64>::new(self.w, self.h, self.d);
@@ -249,6 +289,9 @@ impl QuantumSpacetimeUniverse {
         }
         let gamma = self.grav.gamma_eff() as f64;
         let use_grav = self.grav.mode != 0 || self.grav.has_ext;
+        if use_grav {
+            self.ensure_gravity_buffers();
+        }
         let mut pot = vec![0.0f64; n];
         let mut rho = vec![Complex::new(0.0, 0.0); n];
         let g = self.g as f64;
@@ -289,6 +332,9 @@ impl QuantumSpacetimeUniverse {
                 }
             }
             let nn: f64 = phi.iter().map(|v| v.norm_sqr()).sum();
+            if !nn.is_finite() || nn <= 0.0 {
+                break;
+            }
             let s = (norm0 / nn).sqrt();
             for v in phi.iter_mut() {
                 *v *= s;
@@ -297,13 +343,14 @@ impl QuantumSpacetimeUniverse {
         for i in 0..n {
             let b = i * stride;
             let (re, im) = ((phi[i].re * inv_sqrt) as f32, (phi[i].im * inv_sqrt) as f32);
-            for k in 0..nc {
+            for k in 0..namp {
                 self.buffer_read[b + 2 * k] = re;
                 self.buffer_read[b + 2 * k + 1] = im;
             }
         }
         if self.grav.mode == 1 {
             self.poisson_solve(PoissonSource::Matter, false);
+            self.update_phi_minmax();
         }
     }
 }
@@ -318,8 +365,9 @@ impl QuantumSpacetimeUniverse {
     /// §2.6: 0 = desactivado (defecto), 1 = estática (FFT), 2 = onda. Al activarlo, Φ parte de la
     /// solución estática (sin transitorio).
     pub fn set_gravity(&mut self, mode: u32, gamma: f32) {
-        if self.scenario == 2 && mode != 0 {
-            self.set_message("En el escenario Dirac la gravedad de §2.6 está desactivada; la de los fermiones es la de Nordström (§2.15).");
+        self.message.clear();
+        if self.scenario >= 2 && mode != 0 {
+            self.set_message("La gravedad newtoniana de §2.6 solo está activa en los escenarios de materia/vórtices.");
             return;
         }
         if gamma.is_finite() {
@@ -336,14 +384,17 @@ impl QuantumSpacetimeUniverse {
         let was = self.grav.mode;
         self.grav.mode = mode;
         if mode != 0 && (was == 0 || was != mode) {
+            self.ensure_gravity_buffers();
             self.poisson_solve(PoissonSource::Matter, false);
             if mode == 2 {
                 self.grav.phi_prev.copy_from_slice(&self.grav.phi);
             }
+            self.update_phi_minmax();
         }
         if mode == 0 {
             self.grav.phi.iter_mut().for_each(|v| *v = 0.0);
             self.grav.phi_prev.iter_mut().for_each(|v| *v = 0.0);
+            self.update_phi_minmax();
         }
     }
 
@@ -381,6 +432,9 @@ impl QuantumSpacetimeUniverse {
             return 0.0;
         }
         if self.grav.mode == 0 {
+            if self.grav.phi_ext.len() < self.n {
+                return 0.0;
+            }
             let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
             for i in 0..self.n {
                 lo = lo.min(self.grav.phi_ext[i]);
@@ -395,12 +449,14 @@ impl QuantumSpacetimeUniverse {
     pub fn refresh_gravity(&mut self) {
         if self.grav.mode != 0 {
             self.poisson_solve(PoissonSource::Matter, false);
+            self.update_phi_minmax();
         }
     }
 
     /// §2.6: universo de Einstein–de Sitter en tiempo superconforme (solo con la variante estática).
     /// Toma γ₀ = γ y ⟨E⟩ actuales y m\* de la banda, y pone a = 1.
     pub fn set_expansion(&mut self, on: bool, a_max: f32) {
+        self.message.clear();
         if !on {
             if self.grav.exp_on {
                 self.grav.gamma = self.grav.gamma_eff();
@@ -410,6 +466,10 @@ impl QuantumSpacetimeUniverse {
         }
         if self.grav.mode != 1 {
             self.set_message("La expansión necesita la gravedad estática (modo 1).");
+            return;
+        }
+        if !self.grav.gamma.is_finite() || self.grav.gamma <= 0.0 {
+            self.set_message("La expansión necesita γ > 0 (§2.6).");
             return;
         }
         let rho = self.mean_density();
@@ -451,23 +511,37 @@ impl QuantumSpacetimeUniverse {
         if !(x.is_finite() && y.is_finite() && z.is_finite() && mass.is_finite() && sigma.is_finite()) || sigma <= 0.0 {
             return;
         }
+        self.ensure_gravity_buffers();
         self.poisson_solve(PoissonSource::Gaussian { x: x as f64, y: y as f64, z: z as f64, mass: mass as f64, sigma: sigma as f64 }, true);
+        self.update_phi_minmax();
     }
 
     /// Campo externo Φ_ext = A·sin(2πx/W) (la fuerza lenta casi uniforme de §3.4); A = 0 lo quita.
     pub fn set_gravity_sine(&mut self, amplitude: f32) {
+        if !amplitude.is_finite() {
+            return;
+        }
+        if amplitude == 0.0 {
+            self.grav.phi_ext.iter_mut().for_each(|v| *v = 0.0);
+            self.grav.has_ext = false;
+            self.update_phi_minmax();
+            return;
+        }
+        self.ensure_gravity_buffers();
         let w = self.w as f64;
         for i in 0..self.n {
             let x = (i % self.w) as f64;
             self.grav.phi_ext[i] = (amplitude as f64 * (2.0 * PI * x / w).sin()) as f32;
         }
-        self.grav.has_ext = amplitude != 0.0;
+        self.grav.has_ext = true;
+        self.update_phi_minmax();
     }
 
     /// Quita las fuentes externas congeladas y el campo sinusoidal.
     pub fn clear_external_gravity(&mut self) {
         self.grav.phi_ext.iter_mut().for_each(|v| *v = 0.0);
         self.grav.has_ext = false;
+        self.update_phi_minmax();
     }
 
     /// Estado fundamental del límite continuo en tiempo imaginario (para cargar núcleos de
@@ -479,7 +553,11 @@ impl QuantumSpacetimeUniverse {
     /// Multiplica la amplitud dentro de una esfera por e^{ik·(r − c)} (empuja un solo objeto).
     #[allow(clippy::too_many_arguments)]
     pub fn boost_region(&mut self, cx: f32, cy: f32, cz: f32, radius: f32, kx: f32, ky: f32, kz: f32) {
+        if ![cx, cy, cz, radius, kx, ky, kz].iter().all(|v| v.is_finite()) || radius < 0.0 {
+            return;
+        }
         let stride = self.stride();
+        let namp = self.namp();
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         for i in 0..self.n {
             let (x, y, z) = self.coords(i);
@@ -491,7 +569,7 @@ impl QuantumSpacetimeUniverse {
             }
             let th = kx as f64 * dx + ky as f64 * dy + kz as f64 * dz;
             let (c, s) = (th.cos() as f32, th.sin() as f32);
-            for k in 0..self.nc {
+            for k in 0..namp {
                 let re = self.buffer_read[i * stride + 2 * k];
                 let im = self.buffer_read[i * stride + 2 * k + 1];
                 self.buffer_read[i * stride + 2 * k] = re * c - im * s;
@@ -502,6 +580,9 @@ impl QuantumSpacetimeUniverse {
 
     /// ⟨∂Φ/∂x_a⟩ ponderado con E alrededor de un punto (fuerza media sobre un objeto, por diferencias centradas).
     pub fn mean_gravity_gradient(&self, axis: u32, cx: f32, cy: f32, cz: f32, radius: f32) -> f64 {
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && radius.is_finite()) || radius < 0.0 {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let (mut sw, mut sg) = (0.0f64, 0.0f64);
@@ -532,6 +613,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Perfil radial de E alrededor de un punto, en capas de anchura 1 (hasta 128 capas).
     pub fn compute_radial_profile(&mut self, cx: f32, cy: f32, cz: f32) -> u32 {
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite()) {
+            return 0;
+        }
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let nb = self.radial.len() / 2;
         for v in self.radial.iter_mut() {

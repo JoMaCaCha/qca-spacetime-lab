@@ -140,16 +140,34 @@ impl QuantumSpacetimeUniverse {
                 a += p;
                 b += q;
             }
-            // el dibujo del Dirac 2D lee ↑ y ↓: se le da la suma de sabores (con su norma total)
-            let e: f64 = (0..nf).map(|f| self.fl.psi[i * 2 * nf + 2 * f].norm_sqr() + self.fl.psi[i * 2 * nf + 2 * f + 1].norm_sqr()).sum();
-            let ab = (a.norm_sqr() + b.norm_sqr()).max(1e-300);
-            let sc = (e / ab).sqrt();
-            self.buffer_read[4 * i] = (a.re * sc) as f32;
-            self.buffer_read[4 * i + 1] = (a.im * sc) as f32;
-            self.buffer_read[4 * i + 2] = (b.re * sc) as f32;
-            self.buffer_read[4 * i + 3] = (b.im * sc) as f32;
+            // el dibujo del Dirac 2D lee ↑ y ↓: se le da la suma de sabores (con su norma total);
+            // si hay cancelación destructiva entre sabores con e > 0, usa el sabor dominante para no pintar negro.
+            let mut e = 0.0;
+            let mut dom = (0.0f64, c(0.0, 0.0), c(0.0, 0.0));
+            for f in 0..nf {
+                let (p, q) = (self.fl.psi[i * 2 * nf + 2 * f], self.fl.psi[i * 2 * nf + 2 * f + 1]);
+                let ef = p.norm_sqr() + q.norm_sqr();
+                e += ef;
+                if ef > dom.0 {
+                    dom = (ef, p, q);
+                }
+            }
+            let ab = a.norm_sqr() + b.norm_sqr();
+            let (ua, ub, ab_eff) = if ab < 1e-24 * e && dom.0 > 0.0 {
+                (dom.1, dom.2, dom.0)
+            } else {
+                (a, b, ab.max(1e-300))
+            };
+            let sc = (e / ab_eff).sqrt();
+            self.buffer_read[4 * i] = (ua.re * sc) as f32;
+            self.buffer_read[4 * i + 1] = (ua.im * sc) as f32;
+            self.buffer_read[4 * i + 2] = (ub.re * sc) as f32;
+            self.buffer_read[4 * i + 3] = (ub.im * sc) as f32;
         }
-        self.fl.norms = norms.to_vec();
+        if self.fl.norms.len() != 3 {
+            self.fl.norms.resize(3, 0.0);
+        }
+        self.fl.norms.copy_from_slice(&norms);
     }
 
     /// Envolvente gaussiana en x (uniforme en y) con portadora k₀, en Fourier: ψ̂(k) por celda de x.
@@ -173,13 +191,17 @@ impl QuantumSpacetimeUniverse {
     /// la parametrización estándar (2 sabores: un ángulo; 3: θ₁₂, θ₂₃, θ₁₃ y la fase δ). Masas
     /// vacías: vuelve al Dirac de un sabor.
     pub fn set_flavour_mixing(&mut self, masses: &[f32], angles: &[f32], delta: f32) {
-        if self.scenario != 2 || self.dim != 2 || self.sw.active {
-            self.set_message("La mezcla de sabores necesita el escenario Dirac en 2D (o en una tira 1D).");
+        self.message.clear();
+        if self.scenario != 2 || self.dim != 2 || self.sw.active || self.ncol > 1 {
+            self.set_message("La mezcla de sabores necesita el escenario Dirac en 2D sin color (o en una tira 1D).");
             return;
         }
         let nf = masses.len();
         if nf < 2 || nf > 3 {
             self.fl = Flavour::new();
+            return;
+        }
+        if !delta.is_finite() || !masses.iter().all(|v| v.is_finite()) || !angles.iter().all(|v| v.is_finite()) {
             return;
         }
         let ang: Vec<f64> = angles.iter().map(|a| *a as f64).collect();

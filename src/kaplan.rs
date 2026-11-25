@@ -220,7 +220,7 @@ impl QuantumSpacetimeUniverse {
         let per = if self.kap.fixed { 1.0 } else { 2.0 };
         let e = eig(self.kap.step_matrix(), n);
         let mut idx: Vec<usize> = (0..n).filter(|&i| (-e.values[i].arg() / per).abs() < emax).collect();
-        idx.sort_by(|&a, &b| (-e.values[a].arg()).partial_cmp(&(-e.values[b].arg())).unwrap());
+        idx.sort_by(|&a, &b| (-e.values[a].arg()).total_cmp(&(-e.values[b].arg())));
         let mut out = Vec::new();
         let mut i = 0;
         while i < idx.len() {
@@ -286,9 +286,13 @@ impl QuantumSpacetimeUniverse {
         if self.scenario != 5 {
             self.set_scenario(5);
         }
-        self.kap.ls = (length as usize).clamp(16, 512) & !3;
-        self.kap.m0 = m0.clamp(0.0, 1.5) as f64;
-        self.kap.k = [k1 as f64, k2 as f64, k3 as f64];
+        self.kap.ls = (length as usize).clamp(16, 256) & !3;
+        self.kap.m0 = crate::util::clamp_finite(m0 as f64, 0.0, 1.5, 0.3);
+        self.kap.k = [
+            crate::util::clamp_finite(k1 as f64, -PI, PI, 0.1),
+            crate::util::clamp_finite(k2 as f64, -PI, PI, 0.0),
+            crate::util::clamp_finite(k3 as f64, -PI, PI, 0.0),
+        ];
         self.kap.fixed = fixed_order;
         self.kap.psi.clear();
         self.kap.rebuild();
@@ -353,8 +357,11 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let tot: f64 = self.kap.psi.iter().map(|c| c.norm_sqr()).sum();
-        for v in self.kap.psi.iter_mut() {
-            *v /= tot.sqrt();
+        if tot > 1e-300 {
+            let inv = 1.0 / tot.sqrt();
+            for v in self.kap.psi.iter_mut() {
+                *v *= inv;
+            }
         }
     }
 
@@ -395,13 +402,19 @@ impl QuantumSpacetimeUniverse {
 
     /// Estado aleatorio en la tira y autocorrelación c(t) = ⟨ψ₀|ψ(t)⟩ en los pasos siguientes.
     pub fn kaplan_start_autocorrelation(&mut self, seed: u32) {
+        if self.scenario != 5 || self.kap.psi.is_empty() {
+            return;
+        }
         let mut rng = SplitMix64::new(seed as u64 ^ 0x4B41);
         for v in self.kap.psi.iter_mut() {
             *v = cx(rng.gauss(), rng.gauss());
         }
         let tot: f64 = self.kap.psi.iter().map(|c| c.norm_sqr()).sum();
-        for v in self.kap.psi.iter_mut() {
-            *v /= tot.sqrt();
+        if tot > 1e-300 {
+            let inv = 1.0 / tot.sqrt();
+            for v in self.kap.psi.iter_mut() {
+                *v *= inv;
+            }
         }
         self.kap.psi0 = self.kap.psi.clone();
         self.kap.autocorr.clear();

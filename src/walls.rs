@@ -25,11 +25,24 @@ pub struct DiracMass {
     pub mh: f64,
     pub phi: Vec<f64>,
     pub pi: Vec<f64>,
+    /// Búfer reutilizado para la fuente fermiónica ψ†σ_yψ en `yukawa_step`.
+    pub src_buf: Vec<f64>,
 }
 
 impl DiracMass {
     pub fn new() -> Self {
-        DiracMass { active: false, m: Vec::new(), cs: Vec::new(), yukawa: 0, y: 0.3, v: 1.0, mh: 0.3, phi: Vec::new(), pi: Vec::new() }
+        DiracMass {
+            active: false,
+            m: Vec::new(),
+            cs: Vec::new(),
+            yukawa: 0,
+            y: 0.3,
+            v: 1.0,
+            mh: 0.3,
+            phi: Vec::new(),
+            pi: Vec::new(),
+            src_buf: Vec::new(),
+        }
     }
 }
 
@@ -114,7 +127,7 @@ fn strip_modes(masses: &[f64], ky: f64, omega_max: f64, near: f64) -> Vec<f64> {
     let w = masses.len() as f64;
     let mut out = Vec::new();
     let mut idx: Vec<usize> = (0..e.values.len()).filter(|&k| omega_of(e.values[k]).abs() < omega_max).collect();
-    idx.sort_by(|&a, &b| omega_of(e.values[a]).partial_cmp(&omega_of(e.values[b])).unwrap());
+    idx.sort_by(|&a, &b| omega_of(e.values[a]).total_cmp(&omega_of(e.values[b])));
     for k in idx {
         let p = mode_profile(&e.vectors[k]);
         let (xc, decay) = mode_stats(&p);
@@ -174,17 +187,31 @@ impl QuantumSpacetimeUniverse {
             return;
         }
         let n = self.n;
+        let nco = self.ncol.max(1);
+        let stride = self.stride();
+        if self.dmass.phi.len() != n || self.dmass.pi.len() != n || self.nc < 2 || self.buffer_read.len() < n * stride {
+            return;
+        }
         let (v, mh, y) = (self.dmass.v, self.dmass.mh, self.dmass.y);
         let lam = if v > 0.0 { mh * mh / (2.0 * v * v) } else { 0.0 };
         let damp = 1.0 - self.em.eta;
         let dt = 0.5;
-        // ψ†σ_yψ = 2·Im(conj(ψ↑)·ψ↓) (escenario Dirac 2D, sin color)
-        let src: Vec<f64> = (0..n)
-            .map(|i| {
-                let b = &self.buffer_read[4 * i..4 * i + 4];
-                2.0 * (b[0] as f64 * b[3] as f64 - b[1] as f64 * b[2] as f64)
-            })
-            .collect();
+        // ψ†σ_yψ = 2·Im(conj(ψ↑)·ψ↓), sumado sobre colores si ncol > 1
+        let mut src = std::mem::take(&mut self.dmass.src_buf);
+        if src.len() != n {
+            src.resize(n, 0.0);
+        }
+        for i in 0..n {
+            let mut s = 0.0f64;
+            let base = i * stride;
+            for a in 0..nco {
+                let ou = base + 2 * a;
+                let od = base + 2 * (nco + a);
+                s += 2.0 * (self.buffer_read[ou] as f64 * self.buffer_read[od + 1] as f64
+                    - self.buffer_read[ou + 1] as f64 * self.buffer_read[od] as f64);
+            }
+            src[i] = s;
+        }
         for _ in 0..2 {
             for i in 0..n {
                 let f = self.dmass.phi[i];
@@ -198,6 +225,7 @@ impl QuantumSpacetimeUniverse {
                 self.dmass.phi[i] += dt * self.dmass.pi[i];
             }
         }
+        self.dmass.src_buf = src;
         self.yukawa_to_mass();
     }
 
@@ -212,10 +240,17 @@ impl QuantumSpacetimeUniverse {
 impl QuantumSpacetimeUniverse {
     /// §2.13: masa de Dirac m en el rectángulo [x, x + w) × [y, y + h) (m < 0 crea paredes).
     pub fn paint_dirac_mass(&mut self, x: i32, y: i32, w: u32, h: u32, m: f32) {
+        if !m.is_finite() {
+            return;
+        }
         self.dmass_ensure();
-        for dy in 0..h as i32 {
-            for dx in 0..w as i32 {
-                let i = self.wrap_cell(x + dx, y + dy, 0);
+        let ww = w.min(self.w as u32) as i32;
+        let hh = h.min(self.h as u32) as i32;
+        let x0 = crate::util::wrap_i(x, self.w) as i32;
+        let y0 = crate::util::wrap_i(y, self.h) as i32;
+        for dy in 0..hh {
+            for dx in 0..ww {
+                let i = self.wrap_cell(x0 + dx, y0 + dy, 0);
                 self.dmass.m[i] = m;
             }
         }
@@ -225,6 +260,9 @@ impl QuantumSpacetimeUniverse {
 
     /// m = +m en x < W/2 y −m en el resto: paredes en x = 0 y x = W/2.
     pub fn set_domain_walls(&mut self, m: f32) {
+        if !m.is_finite() {
+            return;
+        }
         self.dmass_ensure();
         for i in 0..self.n {
             let (x, _, _) = self.coords(i);
@@ -239,6 +277,9 @@ impl QuantumSpacetimeUniverse {
     /// r(φ) = size·(1 + 0,2·cos 3φ + 0,1·sin 5φ). 3 = canal de masa m₀ fuera y 0 dentro, de
     /// anchura `size` a lo largo de y (control no quiral).
     pub fn set_dirac_mass_shape(&mut self, kind: u32, m0: f32, size: f32, width: f32) {
+        if !(m0.is_finite() && size.is_finite() && width.is_finite()) {
+            return;
+        }
         self.dmass_ensure();
         let (cx0, cy0) = (self.w as f64 / 2.0, self.h as f64 / 2.0);
         let (m0, r0) = (m0 as f64, size as f64);
@@ -294,20 +335,24 @@ impl QuantumSpacetimeUniverse {
     /// 0 = masa fija, 1 = m = y·φ con el Higgs real estático, 2 = dinámico (el fermión empuja al
     /// Higgs). λ = m_H²/(2v²), así que m_H² = 2λv². Al activarlo, φ = v uniforme.
     pub fn set_yukawa(&mut self, mode: u32, y: f32, v: f32, m_h: f32) {
+        self.message.clear();
         if self.scenario != 2 || self.dim != 2 {
             self.set_message("La masa de Yukawa con paredes es del escenario Dirac 2D (§2.13).");
             return;
         }
+        if !(y.is_finite() && v.is_finite() && m_h.is_finite()) {
+            return;
+        }
         self.dmass.y = y as f64;
-        self.dmass.v = v as f64;
-        self.dmass.mh = m_h as f64;
+        self.dmass.v = (v as f64).max(0.0);
+        self.dmass.mh = (m_h as f64).max(0.0);
         if mode == 0 {
             self.dmass.yukawa = 0;
             return;
         }
         self.dmass_ensure();
         if self.dmass.phi.len() != self.n || self.dmass.yukawa == 0 {
-            self.dmass.phi = vec![v as f64; self.n];
+            self.dmass.phi = vec![self.dmass.v; self.n];
             self.dmass.pi = vec![0.0; self.n];
         }
         self.dmass.yukawa = mode.min(2);
@@ -318,8 +363,12 @@ impl QuantumSpacetimeUniverse {
     /// φ = v·[tanh(m_H·(x − x1)/2) − tanh(γ·m_H·(x − x2)/2) − 1] (−v fuera del par y +v dentro,
     /// continuo en la costura) y π = −u·∂_x del antikink.
     pub fn seed_higgs_kinks(&mut self, x1: i32, x2: i32, velocity: f32) {
+        self.message.clear();
         if self.dmass.yukawa == 0 {
             self.set_message("Primero activa la masa de Yukawa (set_yukawa).");
+            return;
+        }
+        if !velocity.is_finite() {
             return;
         }
         let (v, mh) = (self.dmass.v, self.dmass.mh);
@@ -345,7 +394,7 @@ impl QuantumSpacetimeUniverse {
 
     /// Paso por cero de φ (media sobre las filas) más cercano a x, interpolado: la posición del kink.
     pub fn yukawa_kink_position(&self, x: f32) -> f64 {
-        if self.dmass.phi.len() != self.n {
+        if self.dmass.phi.len() != self.n || !x.is_finite() {
             return 0.0;
         }
         let w = self.w;
@@ -367,6 +416,9 @@ impl QuantumSpacetimeUniverse {
     /// Anchura del kink cercano a x: ajuste de φ = ±v·tanh((x − x₀)/ℓ) en ±8 celdas; devuelve ℓ
     /// (la predicción es 2c/m_H).
     pub fn yukawa_kink_width(&self, x: f32) -> f64 {
+        if self.dmass.phi.len() != self.n || !x.is_finite() || self.dmass.v.abs() < 1e-15 {
+            return 0.0;
+        }
         let x0 = self.yukawa_kink_position(x);
         let w = self.w;
         let v = self.dmass.v;
@@ -385,14 +437,21 @@ impl QuantumSpacetimeUniverse {
             return 0.0;
         }
         let (_, b) = crate::util::fit_linear(&ts, &ls);
-        1.0 / b.abs()
+        if b.abs() > 1e-15 {
+            1.0 / b.abs()
+        } else {
+            0.0
+        }
     }
 
     /// Paquete (norma 1) en el modo quiral exacto de la pared más cercana a x: el autovector de la
     /// tira (perfil de masa de la fila y, con k_y) con |ω| mínimo y centroide más cercano a x,
     /// por una gaussiana de anchura σ en y.
     pub fn inject_wall_packet(&mut self, x: i32, y: f32, sigma: f32, ky: f32) {
-        if self.scenario != 2 || self.dim != 2 || self.ncol > 1 {
+        if self.scenario != 2 || self.dim != 2 || self.ncol > 1 || self.w > 256 {
+            return;
+        }
+        if !(y.is_finite() && sigma.is_finite() && ky.is_finite()) || sigma <= 0.0 {
             return;
         }
         let row = (y.round() as i32).rem_euclid(self.h as i32) as usize;
@@ -533,10 +592,13 @@ impl QuantumSpacetimeUniverse {
     /// Espectro exacto (ω ∈ (−π, π], ordenados) de una tira periódica de anchura `width` con masa
     /// m_out y una franja central de anchura `inner` con m_in (paredes: m_in = −m_out, inner = W/2).
     pub fn dirac_strip_spectrum(&self, width: u32, m_out: f32, m_in: f32, inner: f32, ky: f32) -> Vec<f64> {
-        let masses = synthetic_profile(width.max(4) as usize, m_out as f64, m_in as f64, inner as f64);
+        if !(m_out.is_finite() && m_in.is_finite() && inner.is_finite() && ky.is_finite()) {
+            return Vec::new();
+        }
+        let masses = synthetic_profile(width.clamp(4, 256) as usize, m_out as f64, m_in as f64, inner as f64);
         let e = strip_eigen(&masses, ky as f64);
         let mut w: Vec<f64> = e.values.iter().map(|l| omega_of(*l)).collect();
-        w.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        w.sort_by(f64::total_cmp);
         w
     }
 
@@ -544,20 +606,31 @@ impl QuantumSpacetimeUniverse {
     /// menos de `near` celdas] por estado.
     #[allow(clippy::too_many_arguments)]
     pub fn dirac_strip_modes(&self, width: u32, m_out: f32, m_in: f32, inner: f32, ky: f32, omega_max: f32, near: f32) -> Vec<f64> {
-        let masses = synthetic_profile(width.max(4) as usize, m_out as f64, m_in as f64, inner as f64);
+        if ![m_out, m_in, inner, ky, omega_max, near].iter().all(|v| v.is_finite()) {
+            return Vec::new();
+        }
+        let masses = synthetic_profile(width.clamp(4, 256) as usize, m_out as f64, m_in as f64, inner as f64);
         strip_modes(&masses, ky as f64, omega_max as f64, near as f64)
     }
 
     /// Perfil |ψ(x)|² del estado de la tira sintética con ω más cercano a `omega`.
     pub fn dirac_strip_mode_profile(&self, width: u32, m_out: f32, m_in: f32, inner: f32, ky: f32, omega: f32) -> Vec<f64> {
-        let masses = synthetic_profile(width.max(4) as usize, m_out as f64, m_in as f64, inner as f64);
+        if ![m_out, m_in, inner, ky, omega].iter().all(|v| v.is_finite()) {
+            return Vec::new();
+        }
+        let masses = synthetic_profile(width.clamp(4, 256) as usize, m_out as f64, m_in as f64, inner as f64);
         let e = strip_eigen(&masses, ky as f64);
-        let k = (0..e.values.len()).min_by(|&a, &b| (omega_of(e.values[a]) - omega as f64).abs().partial_cmp(&(omega_of(e.values[b]) - omega as f64).abs()).unwrap()).unwrap_or(0);
+        let k = (0..e.values.len())
+            .min_by(|&a, &b| (omega_of(e.values[a]) - omega as f64).abs().total_cmp(&(omega_of(e.values[b]) - omega as f64).abs()))
+            .unwrap_or(0);
         mode_profile(&e.vectors[k])
     }
 
     /// Estados con |ω| < omega_max del perfil de masa real de la fila `row` (paredes pintadas o Yukawa).
     pub fn dirac_row_modes(&self, row: u32, ky: f32, omega_max: f32, near: f32) -> Vec<f64> {
+        if self.w > 256 || !(ky.is_finite() && omega_max.is_finite() && near.is_finite()) {
+            return Vec::new();
+        }
         let masses = self.mass_row(row as usize);
         strip_modes(&masses, ky as f64, omega_max as f64, near as f64)
     }

@@ -106,15 +106,102 @@ pub fn min_image(dx: f64, l: f64) -> f64 {
     d
 }
 
+/// Limita un `f64` al intervalo `[lo, hi]`, devolviendo `default` si no es finito (`NaN`/`±Inf`).
+#[inline]
+pub fn clamp_finite(x: f64, lo: f64, hi: f64, default: f64) -> f64 {
+    if x.is_finite() {
+        x.clamp(lo, hi)
+    } else {
+        default.clamp(lo, hi)
+    }
+}
+
+/// Limita un `f32` al intervalo `[lo, hi]`, devolviendo `default` si no es finito (`NaN`/`±Inf`).
+#[inline]
+pub fn clamp_finite32(x: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if x.is_finite() {
+        x.clamp(lo, hi)
+    } else {
+        default.clamp(lo, hi)
+    }
+}
+
+/// Puntos casi uniformes sobre la esfera unidad S² mediante espiral de Fibonacci.
+pub fn fibonacci_sphere(n: usize) -> Vec<[f64; 3]> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let golden = PI * (3.0 - 5.0_f64.sqrt());
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let phi = golden * i as f64;
+        out.push([r * phi.cos(), r * phi.sin(), z]);
+    }
+    out
+}
+
+/// Aproximación de Lanczos para `ln Γ(x)` (x > 0).
+pub fn lgamma_approx(x: f64) -> f64 {
+    const COEFFS: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    let z = x - 1.0;
+    let mut acc = COEFFS[0];
+    for (i, &c) in COEFFS[1..].iter().enumerate() {
+        acc += c / (z + (i + 1) as f64);
+    }
+    let t = z + 7.5;
+    0.5 * (2.0 * PI).ln() + (z + 0.5) * t.ln() - t + acc.ln()
+}
+
+/// Dimensión de Myrheim–Meyer a partir de la fracción de ordenación `r = 2 R / (N (N − 1))`
+/// mediante bisección de f(d) = Γ(d+1) Γ(d/2) / (2 Γ(3d/2)).
+pub fn mm_dim_2d(r: f64) -> f64 {
+    if !r.is_finite() || r <= 0.01 {
+        return 6.0;
+    }
+    if r >= 0.999 {
+        return 1.0;
+    }
+    let f = |d: f64| -> f64 {
+        (lgamma_approx(d + 1.0) + lgamma_approx(0.5 * d) - lgamma_approx(1.5 * d)).exp() / 2.0
+    };
+    let (mut lo, mut hi) = (1.0, 6.0);
+    for _ in 0..56 {
+        let mid = 0.5 * (lo + hi);
+        if f(mid) > r {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
+}
+
 /// Coordenada entera envuelta en [0, l).
 #[inline]
 pub fn wrap_i(x: i32, l: usize) -> usize {
-    x.rem_euclid(l as i32) as usize
+    debug_assert!(l > 0 && l <= i32::MAX as usize);
+    let len = l.clamp(1, i32::MAX as usize) as i32;
+    x.rem_euclid(len) as usize
 }
 
 /// HSV → RGB con h en radianes (cualquier rango), s y v en [0, 1].
 #[inline]
 pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    if !(h.is_finite() && s.is_finite() && v.is_finite()) {
+        return (0.0, 0.0, 0.0);
+    }
     let mut hh = h / (2.0 * PI32);
     hh -= hh.floor();
     let h6 = hh * 6.0;
@@ -133,11 +220,18 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     }
 }
 
-/// Ajuste por mínimos cuadrados de y = a + b·x + c·x²; devuelve (a, b, c).
+/// Ajuste por mínimos cuadrados de y = a + b·x + c·x² (centrado en x̄ para mejor condicionamiento);
+/// devuelve (a, b, c).
 pub fn fit_quadratic(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
-    let n = xs.len() as f64;
+    let len = xs.len().min(ys.len());
+    if len == 0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let n = len as f64;
+    let mx = xs[..len].iter().sum::<f64>() / n;
     let (mut sx, mut sx2, mut sx3, mut sx4, mut sy, mut sxy, mut sx2y) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    for (&x, &y) in xs.iter().zip(ys) {
+    for (&xr, &y) in xs[..len].iter().zip(&ys[..len]) {
+        let x = xr - mx;
         let x2 = x * x;
         sx += x;
         sx2 += x2;
@@ -149,18 +243,26 @@ pub fn fit_quadratic(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
     }
     let m = [[n, sx, sx2], [sx, sx2, sx3], [sx2, sx3, sx4]];
     let r = [sy, sxy, sx2y];
-    let sol = solve3(m, r);
-    (sol[0], sol[1], sol[2])
+    let sol = solve_n::<3>(m, r);
+    // y = s0 + s1·(x − mx) + s2·(x − mx)² = (s0 − s1·mx + s2·mx²) + (s1 − 2·s2·mx)·x + s2·x²
+    let a = sol[0] - sol[1] * mx + sol[2] * mx * mx;
+    let b = sol[1] - 2.0 * sol[2] * mx;
+    let c = sol[2];
+    (a, b, c)
 }
 
 /// Ajuste lineal y = a + b·x; devuelve (a, b).
 pub fn fit_linear(xs: &[f64], ys: &[f64]) -> (f64, f64) {
-    let n = xs.len() as f64;
-    let mx = xs.iter().sum::<f64>() / n;
-    let my = ys.iter().sum::<f64>() / n;
+    let len = xs.len().min(ys.len());
+    if len == 0 {
+        return (0.0, 0.0);
+    }
+    let n = len as f64;
+    let mx = xs[..len].iter().sum::<f64>() / n;
+    let my = ys[..len].iter().sum::<f64>() / n;
     let mut sxx = 0.0;
     let mut sxy = 0.0;
-    for (&x, &y) in xs.iter().zip(ys) {
+    for (&x, &y) in xs[..len].iter().zip(&ys[..len]) {
         sxx += (x - mx) * (x - mx);
         sxy += (x - mx) * (y - my);
     }
@@ -169,37 +271,33 @@ pub fn fit_linear(xs: &[f64], ys: &[f64]) -> (f64, f64) {
 }
 
 /// Resuelve un sistema 3×3 por eliminación de Gauss con pivoteo parcial.
-pub fn solve3(mut m: [[f64; 3]; 3], mut r: [f64; 3]) -> [f64; 3] {
-    for col in 0..3 {
-        let mut piv = col;
-        for row in col + 1..3 {
-            if m[row][col].abs() > m[piv][col].abs() {
-                piv = row;
-            }
-        }
-        m.swap(col, piv);
-        r.swap(col, piv);
-        let d = m[col][col];
-        if d.abs() < 1e-300 {
-            continue;
-        }
-        for row in col + 1..3 {
-            let f = m[row][col] / d;
-            for k in col..3 {
-                m[row][k] -= f * m[col][k];
-            }
-            r[row] -= f * r[col];
+pub fn solve3(m: [[f64; 3]; 3], r: [f64; 3]) -> [f64; 3] {
+    solve_n::<3>(m, r)
+}
+
+/// Minimización por sección dorada en `[a, b]` evaluando la función una sola vez por iteración.
+fn golden_minimize(mut a: f64, mut b: f64, iters: usize, f: impl Fn(f64) -> f64) -> f64 {
+    let gr = 0.618_033_988_749_895;
+    let mut c = b - gr * (b - a);
+    let mut d = a + gr * (b - a);
+    let mut fc = f(c);
+    let mut fd = f(d);
+    for _ in 0..iters {
+        if fc < fd {
+            b = d;
+            d = c;
+            fd = fc;
+            c = b - gr * (b - a);
+            fc = f(c);
+        } else {
+            a = c;
+            c = d;
+            fc = fd;
+            d = a + gr * (b - a);
+            fd = f(d);
         }
     }
-    let mut x = [0.0; 3];
-    for i in (0..3).rev() {
-        let mut s = r[i];
-        for k in i + 1..3 {
-            s -= m[i][k] * x[k];
-        }
-        x[i] = if m[i][i].abs() > 1e-300 { s / m[i][i] } else { 0.0 };
-    }
-    x
+    0.5 * (a + b)
 }
 
 /// Ajuste de una sinusoide y ≈ c + a·cos(Ωt) + b·sin(Ωt): barrido de Ω en [w_lo, w_hi]
@@ -236,18 +334,7 @@ pub fn fit_sinusoid(ts: &[f64], ys: &[f64], w_lo: f64, w_hi: f64) -> (f64, f64) 
         }
     }
     let dw = (w_hi - w_lo) / n_scan as f64;
-    let (mut a, mut b) = ((best.1 - dw).max(w_lo * 0.5), best.1 + dw);
-    let gr = 0.618_033_988_75;
-    for _ in 0..60 {
-        let c = b - gr * (b - a);
-        let d = a + gr * (b - a);
-        if resid(c).0 < resid(d).0 {
-            b = d;
-        } else {
-            a = c;
-        }
-    }
-    let w = 0.5 * (a + b);
+    let w = golden_minimize((best.1 - dw).max(w_lo * 0.5), best.1 + dw, 60, |x| resid(x).0);
     (w, resid(w).1)
 }
 
@@ -300,18 +387,7 @@ pub fn fit_sinusoid_drift(ts: &[f64], ys: &[f64], w_lo: f64, w_hi: f64) -> (f64,
         }
     }
     let dw = (w_hi - w_lo) / n_scan as f64;
-    let (mut a, mut b) = (best.1 - dw, best.1 + dw);
-    let gr = 0.618_033_988_75;
-    for _ in 0..60 {
-        let c = b - gr * (b - a);
-        let d = a + gr * (b - a);
-        if fit(c).0 < fit(d).0 {
-            b = d;
-        } else {
-            a = c;
-        }
-    }
-    let w = 0.5 * (a + b);
+    let w = golden_minimize(best.1 - dw, best.1 + dw, 60, |x| fit(x).0);
     let p = fit(w).1;
     (w, (p[2] * p[2] + p[3] * p[3]).sqrt(), p[1])
 }

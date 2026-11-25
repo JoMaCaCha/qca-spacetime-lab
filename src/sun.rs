@@ -423,6 +423,9 @@ impl Mat {
     /// Reunitariza (Gram–Schmidt por filas) y corrige la fase del determinante a 1.
     pub fn reunitarize(&mut self) {
         let n = self.n;
+        if n == 0 {
+            return;
+        }
         for i in 0..n {
             for k in 0..i {
                 let mut d = c(0.0, 0.0);
@@ -438,15 +441,53 @@ impl Mat {
             for j in 0..n {
                 nn += self.a[i * 3 + j].norm_sqr();
             }
-            let inv = 1.0 / nn.sqrt();
-            for j in 0..n {
-                self.a[i * 3 + j] *= inv;
+            if nn > 1e-300 {
+                let inv = 1.0 / nn.sqrt();
+                for j in 0..n {
+                    self.a[i * 3 + j] *= inv;
+                }
+            } else {
+                let mut fixed = false;
+                for basis in 0..n {
+                    for j in 0..n {
+                        self.a[i * 3 + j] = if j == basis { c(1.0, 0.0) } else { c(0.0, 0.0) };
+                    }
+                    for k in 0..i {
+                        let mut d = c(0.0, 0.0);
+                        for j in 0..n {
+                            d += self.a[k * 3 + j].conj() * self.a[i * 3 + j];
+                        }
+                        for j in 0..n {
+                            let v = self.a[k * 3 + j] * d;
+                            self.a[i * 3 + j] -= v;
+                        }
+                    }
+                    let mut bn = 0.0;
+                    for j in 0..n {
+                        bn += self.a[i * 3 + j].norm_sqr();
+                    }
+                    if bn > 1e-300 {
+                        let inv = 1.0 / bn.sqrt();
+                        for j in 0..n {
+                            self.a[i * 3 + j] *= inv;
+                        }
+                        fixed = true;
+                        break;
+                    }
+                }
+                if !fixed {
+                    for j in 0..n {
+                        self.a[i * 3 + j] = if j == i { c(1.0, 0.0) } else { c(0.0, 0.0) };
+                    }
+                }
             }
         }
         let det = self.det();
-        let ph = C::from_polar(1.0, -det.arg() / n as f64);
-        for v in self.a.iter_mut() {
-            *v *= ph;
+        if det.norm_sqr() > 1e-300 {
+            let ph = C::from_polar(1.0, -det.arg() / n as f64);
+            for v in self.a.iter_mut() {
+                *v *= ph;
+            }
         }
     }
 
@@ -675,7 +716,7 @@ pub fn exp_i_hermitian3(q: &Mat) -> Mat {
 /// Vector de color unitario de la base: e_colour.
 pub fn basis_colour(n: usize, colour: usize) -> [C; 3] {
     let mut v = [c(0.0, 0.0); 3];
-    v[colour.min(n - 1)] = c(1.0, 0.0);
+    v[colour.min(n.saturating_sub(1)).min(2)] = c(1.0, 0.0);
     v
 }
 

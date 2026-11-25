@@ -1,0 +1,37 @@
+[project]
+name = "qca-spacetime-lab"
+version = "1.0.1"
+description = "Independent Python/SciPy verification, publication figure generation, and video production pipelines for QCA Spacetime Lab."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Johan Manuel Cabrera Chavarro", email = "johan.m.cabrera.ch@gmail.com" },
+]
+keywords = [
+  "quantum-cellular-automata",
+  "lorentz-invariance-violation",
+  "birefringence",
+  "causal-set-theory",
+  "schwinger-model",
+  "dmrg",
+  "tdvp",
+]
+
+[project.urls]
+Homepage = "https://jomacacha.github.io/qca-spacetime-lab/"
+Repository = "https://github.com/JoMaCaCha/qca-spacetime-lab"
+DOI = "https://doi.org/10.5281/zenodo.24450503"
+
+[project.optional-dependencies]
+ci = [
+  "numpy==1.26.4",
+  "scipy==1.13.1",
+  "matplotlib==3.8.4",
+]
+video = [
+  "numpy>=1.26.4",
+  "pillow>=10.0.0",
+  "playwright>=1.45.0",
+  "edge-tts>=6.1.12",
+]

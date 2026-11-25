@@ -13,14 +13,26 @@ use crate::rng::SplitMix64;
 use crate::spinor::{cx, dirac_matrix, m4_zero, M4};
 use crate::sun::C;
 use crate::twd::{TwdBox, G8};
+use crate::util::clamp_finite;
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
 
 /// Exponencial exacta de una matriz 8×8 por escalado y cuadrados con serie de Taylor de 18 términos.
 fn expm8_iso(a: &G8) -> G8 {
-    let nrm: f64 = a.iter().map(|r| r.iter().map(|z| z.norm()).sum::<f64>()).fold(0.0, f64::max);
-    let s = if nrm > 0.5 { (nrm / 0.5).log2().ceil() as i32 } else { 0 };
+    let mut nrm = 0.0f64;
+    for r in a.iter() {
+        let row_sum: f64 = r.iter().map(|z| z.norm()).sum();
+        if !row_sum.is_finite() {
+            let mut id = [[cx(0.0, 0.0); 8]; 8];
+            for i in 0..8 {
+                id[i][i] = cx(1.0, 0.0);
+            }
+            return id;
+        }
+        nrm = nrm.max(row_sum);
+    }
+    let s = if nrm > 0.5 { ((nrm / 0.5).log2().ceil() as i32).clamp(0, 64) } else { 0 };
     let sc = 0.5f64.powi(s);
     let mut b = *a;
     for r in b.iter_mut() {
@@ -531,7 +543,7 @@ fn published_photon_omega(model: usize, k: [f64; 3]) -> f64 {
 /// 3. Auditoría de 5 modelos fotónicos 3+1D (Mlodinow–Brun 2025, Bisio et al. 2016, Eon et al. 2023
 ///    fijo y palindrómico, y el nuevo Fotón escalonado Yee-4 S₄ con orden n = 4 y cero dobladores).
 pub fn run_via_a_realspace_n4_qca(dt: f64) -> Vec<f64> {
-    let dt = dt.clamp(0.10, 0.35);
+    let dt = clamp_finite(dt, 0.10, 0.35, 0.25);
     let r_opt = 2.0 / 3.0f64.sqrt();
     let specs = build_iso_bonds(r_opt);
     let w1 = 1.0 / (2.0 - 2.0f64.cbrt());
@@ -797,7 +809,7 @@ pub fn run_via_a_realspace_n4_qca(dt: f64) -> Vec<f64> {
 /// (iii) cancelación exacta entre fronteras opuestas ⟨γ⁵⟩_L + ⟨γ⁵⟩_R = 0 (Golterman–Shamir 2025).
 pub fn run_via_a_chiral_kaplan_sen_n4(l_slab: usize, m_bulk: f64) -> Vec<f64> {
     let l = l_slab.clamp(10, 16);
-    let m = m_bulk.clamp(0.35, 0.70);
+    let m = clamp_finite(m_bulk, 0.35, 0.70, 0.55);
     let dim = 4 * l;
 
     let kernel_s = |model: usize, k: [f64; 3]| -> [f64; 3] {
@@ -876,7 +888,7 @@ pub fn run_via_a_chiral_kaplan_sen_n4(l_slab: usize, m_bulk: f64) -> Vec<f64> {
         // 1. Quiralidad de las dos fronteras en k = (k_eval, 0, 0)
         let (ev0, vec0) = build_and_diag(model, [k_eval, 0.0, 0.0]);
         let mut order: Vec<usize> = (0..dim).collect();
-        order.sort_by(|&i, &j| ev0[i].abs().partial_cmp(&ev0[j].abs()).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|&i, &j| ev0[i].abs().total_cmp(&ev0[j].abs()));
         let (mut left_idx, mut right_idx) = (order[0], order[0]);
         let (mut best_l, mut best_r) = (-1.0, -1.0);
         for &idx in order.iter().take(4) {
@@ -1086,7 +1098,7 @@ fn yee4_suzuki_s4_substeps(bx: &TwdBox, a_links: &mut [f64], e_links: &mut [f64]
 ///    en `Yee-4 S₄` el ángulo de polarización NO rota (< 10⁻¹² rad), mientras en Mlodinow–Brun (2025)
 ///    al mismo k oblicuo rota > 0,04 rad (birrefringencia directa en espacio real!).
 pub fn run_via_a_coupled_yee4_3d(dt: f64) -> Vec<f64> {
-    let dt = dt.clamp(0.10, 0.30);
+    let dt = clamp_finite(dt, 0.10, 0.30, 0.25);
     let r_opt = 2.0 / 3.0f64.sqrt();
     let specs = build_iso_bonds(r_opt);
     let w1 = 1.0 / (2.0 - 2.0f64.cbrt());
@@ -1289,7 +1301,7 @@ pub fn run_via_a_coupled_yee4_3d(dt: f64) -> Vec<f64> {
         }
         let (evals, cols) = sym3_eigs(dmat);
         let mut order = [0usize, 1, 2];
-        order.sort_by(|&i, &j| evals[j].partial_cmp(&evals[i]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|&i, &j| evals[j].total_cmp(&evals[i]));
         let v1 = cols[order[0]];
         let v2 = cols[order[1]];
         let inv_sq2 = std::f64::consts::FRAC_1_SQRT_2;

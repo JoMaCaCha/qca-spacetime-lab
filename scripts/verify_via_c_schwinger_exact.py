@@ -28,6 +28,8 @@ import scipy.sparse.linalg as spla
 
 
 def build_sector_states(n_rungs: int) -> tuple[list[int], dict[int, int]]:
+    if n_rungs < 2 or n_rungs % 2 != 0:
+        raise ValueError(f"n_rungs must be an even integer >= 2, got {n_rungs}")
     half = n_rungs // 2
     states: list[int] = []
     idx_map: dict[int, int] = {}
@@ -43,7 +45,6 @@ def build_sector_states(n_rungs: int) -> tuple[list[int], dict[int, int]]:
 def build_schwinger_sparse(n_rungs: int, v_a: float, v_b: float, j_gauge: float) -> tuple[sp.csr_matrix, np.ndarray, np.ndarray]:
     states, idx_map = build_sector_states(n_rungs)
     d = len(states)
-    dim = d * d
     occ = np.zeros((d, n_rungs), dtype=np.int8)
     for i, st in enumerate(states):
         for r in range(n_rungs):
@@ -76,7 +77,6 @@ def build_schwinger_sparse(n_rungs: int, v_a: float, v_b: float, j_gauge: float)
 
 def lanczos_ir_speed(H: sp.csr_matrix, e0: float, gs: np.ndarray, occ: np.ndarray,
                      n_rungs: int, w_a: float, w_b: float, krylov: int = 48) -> tuple[float, float]:
-    d = occ.shape[0]
     prof = np.cos(math.pi * (np.arange(n_rungs) + 1.0) / (n_rungs + 1.0))
     o_single = (occ.astype(np.float64) - 0.5) @ prof  # (d,)
     op_diag = (w_a * o_single[:, None] + w_b * o_single[None, :]).ravel()
@@ -107,7 +107,6 @@ def lanczos_ir_speed(H: sp.csr_matrix, e0: float, gs: np.ndarray, occ: np.ndarra
         betas.append(b)
         vs.append(w / b)
 
-    m = len(alphas)
     T = np.diag(alphas)
     if betas:
         T += np.diag(betas, 1) + np.diag(betas, -1)
@@ -123,6 +122,8 @@ def lanczos_ir_speed(H: sp.csr_matrix, e0: float, gs: np.ndarray, occ: np.ndarra
             clusters[-1][1] = pnew
         else:
             clusters.append([wx, wt])
+    if not clusters:
+        return 0.0, 0.0
     chosen = next((c[0] for c in clusters if c[1] >= 0.08), max(clusters, key=lambda c: c[1])[0])
     q_scale = 2.0 * math.sin(math.pi / (2.0 * (n_rungs + 1.0)))
     return chosen / q_scale, chosen
@@ -180,43 +181,59 @@ def main() -> int:
     # 1. Exact sparse Lanczos on continuum trajectory N_r = 6 (J = 8/36) and N_r = 8 (J = 8/64)
     #    Cross-check directly against datos_investigacion/via_c_continuum_traj.csv
     csv_cont = data_dir / "via_c_continuum_traj.csv"
+    if not csv_cont.exists():
+        raise FileNotFoundError(
+            f"Missing required Rust benchmark CSV: {csv_cont}. "
+            "Run `cargo run --release --bin qsu_cli -- phase19` to regenerate it."
+        )
     rust_cont: dict[int, dict[str, float]] = {}
-    if csv_cont.exists():
-        with csv_cont.open("r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                rust_cont[int(float(row["N_r"]))] = {k: float(v) for k, v in row.items()}
+    with csv_cont.open("r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            rust_cont[int(float(row["N_r"]))] = {k: float(v) for k, v in row.items()}
 
-    max_rel_err = 0.0
+    rng = np.random.default_rng(20250620)
+    max_abs_err = 0.0
+    checked_count = 0
     print("[1] Exact sparse Lanczos continuum trajectory (M_S * L = const, J = 8 / N_r^2):")
     for nr in (6, 8):
         jg = 8.0 / (nr * nr)
         H, occ, _ = build_schwinger_sparse(nr, v_a, v_b, jg)
-        evals, evecs = spla.eigsh(H, k=1, which="SA", tol=1e-12)
+        v0 = rng.standard_normal(H.shape[0])
+        evals, evecs = spla.eigsh(H, k=1, which="SA", tol=1e-12, v0=v0)
         e0 = float(evals[0])
         gs = evecs[:, 0]
         va_ir, _ = lanczos_ir_speed(H, e0, gs, occ, nr, 1.0, 0.0)
         vb_ir, _ = lanczos_ir_speed(H, e0, gs, occ, nr, 0.0, 1.0)
-        mis = abs(va_ir - vb_ir) / (0.5 * (va_ir + vb_ir))
-        cmp_msg = ""
-        if nr in rust_cont:
-            rc = rust_cont[nr]
-            err_a = abs(va_ir - rc["vA_IR"])
-            err_b = abs(vb_ir - rc["vB_IR"])
-            max_rel_err = max(max_rel_err, err_a, err_b)
-            cmp_msg = f"  | Rust diff: d_vA={err_a:.2e}, d_vB={err_b:.2e}"
+        v_mean = 0.5 * (va_ir + vb_ir)
+        if v_mean <= 0.0:
+            raise RuntimeError(f"Non-positive IR speed at N_r={nr}: vA={va_ir}, vB={vb_ir}")
+        mis = abs(va_ir - vb_ir) / v_mean
+        if nr not in rust_cont:
+            raise KeyError(f"Expected N_r={nr} row in {csv_cont}")
+        rc = rust_cont[nr]
+        err_a = abs(va_ir - rc["vA_IR"])
+        err_b = abs(vb_ir - rc["vB_IR"])
+        max_abs_err = max(max_abs_err, err_a, err_b)
+        checked_count += 1
+        cmp_msg = f"  | Rust diff: d_vA={err_a:.2e}, d_vB={err_b:.2e}"
         print(f"  N_r={nr:2d} (dim={H.shape[0]:5d}), J={jg:.6f}: E0={e0:+.6f}, vA_IR={va_ir:.6f}, vB_IR={vb_ir:.6f}, mis={mis:.2e}{cmp_msg}")
+    assert checked_count == 2, f"Expected 2 Rust continuum trajectory checks, ran {checked_count}"
 
     # 2. Full J sweep at N_r = 8 (dim = 4,900) verifying J = 0 -> J = 1.0 synchronization and E_0
     print("\n[2] Exact J-sweep at N_r = 8 (dim = 4,900, U(1)_A x U(1)_B exact):")
     for jg in (0.0, 0.08, 0.20, 0.50, 1.00):
         H, occ, _ = build_schwinger_sparse(8, v_a, v_b, jg)
-        evals, evecs = spla.eigsh(H, k=1, which="SA", tol=1e-12)
+        v0 = rng.standard_normal(H.shape[0])
+        evals, evecs = spla.eigsh(H, k=1, which="SA", tol=1e-12, v0=v0)
         e0 = float(evals[0])
         gs = evecs[:, 0]
         va_ir, _ = lanczos_ir_speed(H, e0, gs, occ, 8, 1.0, 0.0)
         vb_ir, _ = lanczos_ir_speed(H, e0, gs, occ, 8, 0.0, 1.0)
         _, om_sym = lanczos_ir_speed(H, e0, gs, occ, 8, 1.0, -1.0)
-        mis = abs(va_ir - vb_ir) / (0.5 * (va_ir + vb_ir))
+        v_mean = 0.5 * (va_ir + vb_ir)
+        if v_mean <= 0.0:
+            raise RuntimeError(f"Non-positive IR speed at J={jg}: vA={va_ir}, vB={vb_ir}")
+        mis = abs(va_ir - vb_ir) / v_mean
         print(f"  J={jg:4.2f}: E0={e0:+.6f}, vA_IR={va_ir:.6f}, vB_IR={vb_ir:.6f}, mis={mis:.5f}, omega_ch={om_sym:.4f}")
         if jg == 0.0:
             assert abs(va_ir - v_a) < 1e-6 and abs(vb_ir - v_b) < 1e-6
@@ -230,8 +247,8 @@ def main() -> int:
         print(f"  v_B/v_A = {vb_test:.2f}: Delta_eff(exact 4x4, J=200) = {d_num:.6f} vs analytical {d_ex:.6f} (err = {d_err:.2e})")
         assert d_err < 1e-4
 
-    assert max_rel_err < 1e-5, f"Rust vs Python/SciPy mismatch exceeded 1e-5: {max_rel_err}"
-    print(f"\nALL PATHWAY C INDEPENDENT VERIFICATIONS PASSED (max Rust/Python diff = {max_rel_err:.2e})!")
+    assert max_abs_err < 1e-6, f"Rust vs Python/SciPy mismatch exceeded 1e-6: {max_abs_err}"
+    print(f"\nALL PATHWAY C INDEPENDENT VERIFICATIONS PASSED (max Rust/Python abs diff = {max_abs_err:.2e})!")
     return 0
 
 

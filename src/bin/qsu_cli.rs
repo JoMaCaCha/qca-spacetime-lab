@@ -1,9 +1,9 @@
-//! Ejecutable nativo por lotes (Fase 15) con soporte multihilo (`std::thread::scope`) para los
-//! estudios pesados de muchos cuerpos (MPS), espacio-tiempo covariante y problemas abiertos de
-//! frontera (§8), sin las limitaciones de memoria y tiempo de un navegador.
+//! Ejecutable nativo por lotes (Fase 15) con soporte multihilo acotado (`std::thread::scope`)
+//! para los estudios pesados de muchos cuerpos (MPS), espacio-tiempo covariante y problemas
+//! abiertos de frontera (§8), sin las limitaciones de memoria y tiempo de un navegador.
 //!
 //! Uso:
-//!   cargo run --release --bin qsu_cli -- [all|phase15|phase16|phase17|phase18|phase19|phase20|pub-checks|via-a|via-b|via-c|via-a-chiral|via-b-fss|via-c-scaling|via-a-yee4|via-b-wl|via-b-multiseed|via-c-tdvp|via-c-chi-conv|schwinger|collins|causal-set|scan-3d|floquet-map|fermion-lv|dmrg|causal-mc|su2-4d|spin2|noncubic|kaplan-sen|study1|study2|study3]
+//!   cargo run --release --bin qsu_cli -- [--help|all|phase15|phase16|phase17|phase18|phase19|phase20|pub-checks|via-a|via-b|via-c|via-a-chiral|via-b-fss|via-c-scaling|via-a-yee4|via-b-wl|via-b-multiseed|via-c-tdvp|via-c-chi-conv|schwinger|collins|causal-set|scan-3d|floquet-map|fermion-lv|dmrg|causal-mc|su2-4d|spin2|noncubic|kaplan-sen|study1|study2|study3]
 
 use qca_spacetime_lab::research_io::write_research_file;
 use qca_spacetime_lab::via_b_causal_pt::{
@@ -12,10 +12,110 @@ use qca_spacetime_lab::via_b_causal_pt::{
 };
 use qca_spacetime_lab::via_c_schwinger2f::run_via_c_chi_convergence;
 use qca_spacetime_lab::QuantumSpacetimeUniverse;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
+
+const VALID_TASKS: &[&str] = &[
+    "all",
+    "phase15",
+    "phase16",
+    "phase17",
+    "phase18",
+    "phase19",
+    "phase20",
+    "pub-checks",
+    "via-a",
+    "via-b",
+    "via-c",
+    "via-a-chiral",
+    "via-b-fss",
+    "via-c-scaling",
+    "via-a-yee4",
+    "via-b-wl",
+    "via-b-multiseed",
+    "via-c-tdvp",
+    "via-c-chi-conv",
+    "schwinger",
+    "collins",
+    "causal-set",
+    "scan-3d",
+    "floquet-map",
+    "fermion-lv",
+    "dmrg",
+    "causal-mc",
+    "su2-4d",
+    "spin2",
+    "noncubic",
+    "kaplan-sen",
+    "study1",
+    "study2",
+    "study3",
+];
+
+fn print_usage() {
+    println!("Uso: qsu_cli [tarea]");
+    println!("Tareas disponibles:");
+    println!("  {}", VALID_TASKS.join(" | "));
+}
+
+fn save_research_or_fail(rel_path: &str, content: &str, had_io_err: &mut bool) {
+    if let Err(e) = write_research_file(rel_path, content) {
+        eprintln!("ERROR escribiendo datos_investigacion/{}: {}", rel_path, e);
+        *had_io_err = true;
+    }
+}
+
+/// Ejecuta `f` sobre todos los elementos de `items` usando como máximo `available_parallelism()` hilos
+/// del sistema operativo, preservando el orden original de salida.
+fn run_bounded_parallel<T, R, F>(items: Vec<T>, f: F) -> Vec<R>
+where
+    T: Send + Sync,
+    R: Send,
+    F: Fn(usize, &T) -> R + Send + Sync,
+{
+    let n = items.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let n_threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4)
+        .min(n);
+    let next = AtomicUsize::new(0);
+    let results: Vec<Mutex<Option<R>>> = (0..n).map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|sc| {
+        for _ in 0..n_threads {
+            let items_ref = &items;
+            let f_ref = &f;
+            let next_ref = &next;
+            let res_ref = &results;
+            sc.spawn(move || loop {
+                let idx = next_ref.fetch_add(1, Ordering::Relaxed);
+                if idx >= items_ref.len() {
+                    break;
+                }
+                let val = f_ref(idx, &items_ref[idx]);
+                *res_ref[idx].lock().unwrap() = Some(val);
+            });
+        }
+    });
+    results.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+}
 
 fn main() {
     let task = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
+    if task == "--help" || task == "-h" || task == "help" {
+        print_usage();
+        return;
+    }
+    if !VALID_TASKS.contains(&task.as_str()) {
+        eprintln!("Error: tarea desconocida {:?}.", task);
+        eprintln!("Usa --help para listar las tareas válidas ({}).", VALID_TASKS.join(", "));
+        std::process::exit(2);
+    }
+
+    let mut had_io_err = false;
     let u = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
     let run_all = task == "all";
     let run_p15 = run_all || task == "phase15";
@@ -34,9 +134,8 @@ fn main() {
             conf[0], conf[1], conf[2], conf[3], conf[4], conf[5], conf[6]
         );
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let ptr = u2.mps_schwinger_string_breaking(12, 0.8, 0.15, 0.9, 6, 16, 0.08, 45);
-        let len = u2.open_quantum_out_len() as usize;
-        let sb = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let _ = u2.mps_schwinger_string_breaking(12, 0.8, 0.15, 0.9, 6, 16, 0.08, 45);
+        let sb = u2.open_quantum_out_slice();
         println!(
             "  Rotura cuántica de cuerda (L=12, d=6, m=0,15, J=0,9): E_c {:.3} → mín {:.3} → fin {:.3}; S_vN máx={:.4} ({:.2} s)",
             sb[0], sb[1], sb[2], sb[3], t0.elapsed().as_secs_f64()
@@ -63,14 +162,14 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 3. Espacio-tiempo discreto covariante (Conjuntos Causales + Grafo Dinámico) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let ptr = u2.causal_set_lorentz_test(200, 0.8, 24, 7);
-        let cs = unsafe { std::slice::from_raw_parts(ptr, 7) };
+        let _ = u2.causal_set_lorentz_test(200, 0.8, 24, 7);
+        let cs = u2.open_quantum_out_slice();
         println!(
             "  Conjunto causal (N=200, boost η=0,8): d_MM={:.4} (exacto 2), Δenlaces={:.0}, grado_medio={:.2}, □_BD reposo={:.3} / boost={:.3} (exacto 2,0), distorsión cúbica={:.2}×",
             cs[0], cs[1], cs[2], cs[3], cs[4], cs[5]
         );
-        let ptr_g = u2.dynamic_graph_walk_test(96, 0.25, 0.85, 0.35, 1.0, 55);
-        let dg = unsafe { std::slice::from_raw_parts(ptr_g, 7) };
+        let _ = u2.dynamic_graph_walk_test(96, 0.25, 0.85, 0.35, 1.0, 55);
+        let dg = u2.open_quantum_out_slice();
         println!(
             "  Grafo dinámico: x_plano={:.2}, x_curvo={:.2}, retraso_Shapiro={:.2} celdas, c_centro={:.3} vs c_plano={:.3}, err_norma={:.2e} ({:.2} s)",
             dg[0], dg[1], dg[2], dg[4], dg[3], dg[5], t0.elapsed().as_secs_f64()
@@ -110,14 +209,14 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 7. [Fase 16] DMRG variacional (Bethe + CFT c=1) y flujo RG de Lorentz (Chadha–Nielsen) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.dmrg_xxz_cft_scaling(32, 4);
-        let r = unsafe { std::slice::from_raw_parts(p, 10) };
+        let _ = u2.dmrg_xxz_cft_scaling(32, 4);
+        let r = u2.open_quantum_out_slice();
         println!(
             "  DMRG XXZ Δ=1/2 (L=16..48): e_∞={:.6} (Bethe {:.6}, err={:.2e}), c_CFT={:.4} (exacto 1,0)",
             r[0], r[1], r[2], r[3]
         );
-        let p2 = u2.two_species_lorentz_rg_study(10, 1.0, 0.5, 0.8, 24);
-        let rg = unsafe { std::slice::from_raw_parts(p2, 10) };
+        let _ = u2.two_species_lorentz_rg_study(10, 1.0, 0.5, 0.8, 24);
+        let rg = u2.open_quantum_out_slice();
         println!(
             "  Dos especies DMRG + RG: ΔE_lig={:.4}, ⟨S^z_A S^z_B⟩={:.4}→{:.4}; QED M_P→m_e ratio={:.4} (falla); fuerte γ_*=0,90 δc_IR={:.2e} (γ_min={:.3}) ({:.2} s)",
             rg[0], rg[1], rg[2], rg[5], rg[7], rg[8], t0.elapsed().as_secs_f64()
@@ -128,8 +227,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 8. [Fase 16] Monte Carlo dinámico de conjuntos causales 2D (acción Benincasa–Dowker, Surya 2012) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.causal_set_bd_mc(32, 1800, 16);
-        let r = unsafe { std::slice::from_raw_parts(p, 9) };
+        let _ = u2.causal_set_bd_mc(32, 1800, 16);
+        let r = u2.open_quantum_out_slice();
         println!(
             "  β=0 (variedad 2D): S/N={:.3}, d_MM={:.3}, R={:.3} | β=2,0 (fase ordenada): S/N={:.3}, R={:.3} | β=-0,25 (bipartito): S/N={:.2}, N1/N={:.2} ({:.2} s)",
             r[0], r[1], r[2], r[3], r[5], r[6], r[7], t0.elapsed().as_secs_f64()
@@ -140,8 +239,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 9. [Fase 16] Yang–Mills cuántico SU(2) 3+1D euclídeo (Creutz 1980, baño térmico) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.lattice_su2_4d_mc(6, 30, 50, 16);
-        let r = unsafe { std::slice::from_raw_parts(p, 7) };
+        let _ = u2.lattice_su2_4d_mc(6, 30, 50, 16);
+        let r = u2.open_quantum_out_slice();
         println!(
             "  Malla 6⁴: β=1,0 ⟨P⟩={:.4} (fuerte {:.4}); β=3,0 ⟨P⟩={:.4} (débil {:.4}); confinamiento χ(2,2) β=1,5: {:.3}, β=2,0: {:.3} ({:.2} s)",
             r[0], r[1], r[2], r[3], r[4], r[5], t0.elapsed().as_secs_f64()
@@ -166,8 +265,8 @@ fn main() {
             m[1], m[2], m[3], m[4], m[10], m[5]
         );
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.real_catalog_lv_likelihood(1500);
-        let r = unsafe { std::slice::from_raw_parts(p, 10) };
+        let _ = u2.real_catalog_lv_likelihood(1500);
+        let r = u2.open_quantum_out_slice();
         println!(
             "  Perfil χ² catálogos (1500 orient.): 95%CL < {:.3e}·ℓ_P, 5σ < {:.3e}·ℓ_P; KM3NeT conservador(110 PeV) < {:.3e}·ℓ_P ({:.2} s)",
             r[0], r[1], r[3], t0.elapsed().as_secs_f64()
@@ -178,8 +277,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 12. [Fase 16] Fermiones quirales en frontera finita (Kaplan–Sen 2024 / Golterman–Shamir 2025) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.chiral_4comp_kaplan_sen_test(14, 0.45);
-        let r = unsafe { std::slice::from_raw_parts(p, 11) };
+        let _ = u2.chiral_4comp_kaplan_sen_test(14, 0.45);
+        let r = u2.open_quantum_out_slice();
         println!(
             "  Losa L=14: ω_borde={:.5} (sin k_x={:.5}), ⟨γ⁵⟩_L={:.4}, ⟨γ⁵⟩_R={:.4} (suma={:.2e}), hueco doblador={:.3}, QCA4(r=1)={:.2} ({:.2} s)",
             r[0], r[1], r[2], r[3], r[4], r[7], r[9], t0.elapsed().as_secs_f64()
@@ -190,9 +289,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 13. [Fase 17 — Estudio 1] Restauración de Lorentz vs hueco de masa en dos especies acopladas (Lanczos exacto + S(q,ω) + DMRG) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.study1_two_species_lorentz_phases(24, 16);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.study1_two_species_lorentz_phases(24, 16);
+        let out = u2.open_quantum_out_slice();
         let names = ["Control (g=0)", "1A Dens-Dens (g_z=0.6)", "1B Heisenberg (g=1.4)", "1C Mezcla (g_xy=0.75)"];
         println!("  Media armónica analítica 1C: v_harm = {:.4}", out[1]);
         for (i, name) in names.iter().enumerate() {
@@ -209,9 +307,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 14. [Fase 17 — Estudio 2] Clasificación triple de 8 familias QCA 3+1D + QCA isotrópico n = 4 ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.study2_3d_qca_triple_classification(22);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.study2_3d_qca_triple_classification(22);
+        let out = u2.open_quantum_out_slice();
         let names = [
             "0: SC-Weyl-Fijo (2c)",
             "1: SC-Weyl-Pal (2c)",
@@ -236,9 +333,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 15. [Fase 17 — Estudio 3] Conjuntos causales dinámicos + materia cuántica (Johnston + Sorkin–Johnston) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.study3_causal_set_matter_backreaction(20, 600, 6);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.study3_causal_set_matter_backreaction(20, 600, 6);
+        let out = u2.open_quantum_out_slice();
         println!(
             "  Propagador Johnston vs ½J₀(mτ): err_rms={:.4}; σ_G(cono)={:.4}, σ_G(bulk)={:.4}",
             out[0], out[1], out[2]
@@ -265,9 +361,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 16. [Fase 18 — Vía A] QCA 3+1D isotrópico n = 4 en espacio real (U(1) exacto, S₂ vs S₄) + auditoría fotones ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_a_realspace_n4_qca(0.25);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_a_realspace_n4_qca(0.25);
+        let out = u2.open_quantum_out_slice();
         println!(
             "  Espacio real 6³ (U(1) + Maxwell): norm_drift={:.2e}, gauss={:.2e}, gauge_dens={:.2e}, gauge_E={:.2e}",
             out[0], out[1], out[2], out[3]
@@ -307,8 +402,8 @@ fn main() {
             "{{\n  \"via\": \"A\",\n  \"dt\": 0.25,\n  \"r_wilson\": 1.1547005383792517,\n  \"grid_realspace\": \"6x6x6\",\n  \"norm_drift\": {:.6e},\n  \"gauss_residual\": {:.6e},\n  \"gauge_density_err\": {:.6e},\n  \"gauge_e_err\": {:.6e},\n  \"s2_a2_spread\": {:.6e},\n  \"s2_a2_mean\": {:.6e},\n  \"s4_a2_spread\": {:.6e},\n  \"s4_a2_mean\": {:.6e},\n  \"s4_corner_gap\": {:.6}\n}}\n",
             out[0], out[1], out[2], out[3], out[4], out[5], out[7], out[8], out[10]
         );
-        let _ = write_research_file("via_a_qca_n4.csv", &csv);
-        let _ = write_research_file("via_a_resumen.json", &json);
+        save_research_or_fail("via_a_qca_n4.csv", &csv, &mut had_io_err);
+        save_research_or_fail("via_a_resumen.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_a_qca_n4.csv + via_a_resumen.json ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -324,17 +419,8 @@ fn main() {
                 tasks.push((n, m, sw));
             }
         }
-        let runs: Vec<_> = std::thread::scope(|sc| {
-            let handles: Vec<_> = tasks
-                .into_iter()
-                .enumerate()
-                .map(|(idx, (n, m, sw))| {
-                    sc.spawn(move || {
-                        run_parallel_tempering_2d(n, &VIA_B_BETAS, sw, m, 0x18B0_9001 ^ (idx as u64 * 104729))
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        let runs = run_bounded_parallel(tasks, |idx, &(n, m, sw)| {
+            run_parallel_tempering_2d(n, &VIA_B_BETAS, sw, m, 0x18B0_9001 ^ (idx as u64 * 104729))
         });
         let mut csv = String::from("N,matter_mode,swap_acc,beta,s_mean,s_err,dmm_mean,dmm_err,chi_s,cv,binder,tau_int,mat_mean\n");
         let mut summary = String::from("N,matter_mode,swap_acc,beta_c_est,chi_peak,dmm_b0,dmm_b0_err,s_bhi,s_bhi_err,s_bneg,s_bneg_err\n");
@@ -366,8 +452,8 @@ fn main() {
                 ));
             }
         }
-        let _ = write_research_file("via_b_causal_pt_full.csv", &csv);
-        let _ = write_research_file("via_b_causal_pt_scaling.csv", &summary);
+        save_research_or_fail("via_b_causal_pt_full.csv", &csv, &mut had_io_err);
+        save_research_or_fail("via_b_causal_pt_scaling.csv", &summary, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_b_causal_pt_full.csv + via_b_causal_pt_scaling.csv ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -375,9 +461,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 18. [Fase 18 — Vía C] Schwinger 2 sabores (N_r = 10 ⇒ 63 504 estados exactos + DMRG por bloques U(1) χ = 48) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_c_schwinger2f_lorentz(10, 48);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_c_schwinger2f_lorentz(10, 48);
+        let out = u2.open_quantum_out_slice();
         println!(
             "  Media geométrica analítica √(v_A v_B) = {:.4} | U(1)-DMRG XXZ L=24: e={:.5}, S={:.3} | MPO6 exact err={:.2e}",
             out[0], out[2], out[3], out[6]
@@ -397,11 +482,11 @@ fn main() {
             csv.push_str(&format!("{:.4},{:.6},{:.6},{:.6},{:.6},{:.6}\n", r[0], r[1], r[2], r[3], r[4], r[5]));
         }
         let json = format!(
-            "{{\n  \"via\": \"C\",\n  \"n_rungs_exact\": {:.0},\n  \"v_a\": 1.0,\n  \"v_b\": 0.45,\n  \"v_geom_pred\": {:.6},\n  \"u1_dmrg_xxz_e\": {:.6},\n  \"mpo6_exact_err\": {:.6e},\n  \"c_eff_j0\": {:.4},\n  \"c_eff_j15\": {:.4}\n}}\n",
+            "{{\n  \"via\": \"C\",\n  \"n_rungs_exact\": {:.0},\n  \"v_a\": 1.0,\n  \"v_b\": 0.45,\n  \"v_geom_pred\": {:.6},\n  \"u1_dmrg_xxz_e\": {:.6},\n  \"mpo6_exact_err\": {:.6e},\n  \"c_eff_j0\": {:.4},\n  \"c_eff_j10\": {:.4}\n}}\n",
             out[1], out[0], out[2], out[6], out[9], out[12]
         );
-        let _ = write_research_file("via_c_schwinger2f.csv", &csv);
-        let _ = write_research_file("via_c_resumen.json", &json);
+        save_research_or_fail("via_c_schwinger2f.csv", &csv, &mut had_io_err);
+        save_research_or_fail("via_c_resumen.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_c_schwinger2f.csv + via_c_resumen.json ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -409,9 +494,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 19. [Fase 19 — Vía A quiral 4+1D] Kaplan–Sen en losa abierta (SC vs Iso-SC+FCC vs Symanzik-4 n = 4) ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_a_chiral_kaplan_sen_n4(14, 0.55);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_a_chiral_kaplan_sen_n4(14, 0.55);
+        let out = u2.open_quantum_out_slice();
         let names = ["SC-Kaplan-Sen", "Iso-SC+FCC-Kaplan-Sen", "Symanzik4-Kaplan-Sen"];
         let mut csv = String::from("modelo,chi_left,chi_right,net_chiral,a2_spread,a2_mean,corner_gap,tier\n");
         for (i, nm) in names.iter().enumerate() {
@@ -425,7 +509,7 @@ fn main() {
                 nm, r[0], r[1], r[2], r[3], r[4], r[5], r[6]
             ));
         }
-        let _ = write_research_file("via_a_chiral_kaplan_sen_n4.csv", &csv);
+        save_research_or_fail("via_a_chiral_kaplan_sen_n4.csv", &csv, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_a_chiral_kaplan_sen_n4.csv ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -481,9 +565,9 @@ fn main() {
             ));
         }
         json.push_str("  ]\n}\n");
-        let _ = write_research_file("via_b_fss_20rep_full.csv", &csv_full);
-        let _ = write_research_file("via_b_fss_20rep_summary.csv", &csv_sum);
-        let _ = write_research_file("via_b_fss_fits.json", &json);
+        save_research_or_fail("via_b_fss_20rep_full.csv", &csv_full, &mut had_io_err);
+        save_research_or_fail("via_b_fss_20rep_summary.csv", &csv_sum, &mut had_io_err);
+        save_research_or_fail("via_b_fss_fits.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_b_fss_20rep_*.csv + via_b_fss_fits.json + checkpoints/ ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -491,9 +575,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 21. [Fase 19 — Vía C escalado] Continuo v_IR → √(v_A v_B) + Calabrese–Cardy N_r = 8..32 (L = 64, χ = 56) + 3+1D Coulomb ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_c_continuum_and_scaling(true, 56);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_c_continuum_and_scaling(true, 56);
+        let out = u2.open_quantum_out_slice();
         let n_sz = out[13] as usize;
         println!(
             "  Continuo (M_S·L = const, κ = 8,0): √(v_A v_B)={:.4} | v_inf_lin={:.4}, v_inf_quad={:.4} (R²={:.4})",
@@ -524,12 +607,12 @@ fn main() {
             out[10], out[11], out[12], out[14 + 10 + 4]
         );
         let json = format!(
-            "{{\n  \"via\": \"C-scaling\",\n  \"v_geom\": {:.6},\n  \"v_inf_lin\": {:.6},\n  \"v_inf_quad\": {:.6},\n  \"r2_cont\": {:.6},\n  \"c_fit_j0\": {:.4},\n  \"r2_j0\": {:.5},\n  \"c_hi_j0\": {:.4},\n  \"c_fit_j1\": {:.4},\n  \"r2_j1\": {:.5},\n  \"c_hi_j1\": {:.4},\n  \"mis_uv\": {:.4},\n  \"mis_3d_coulomb_ir\": {:.4},\n  \"rg_factor_3d_phot\": {:.4},\n  \"mis_1d_schwinger_ir\": {:.6}\n}}\n",
+            "{{\n  \"via\": \"C-scaling\",\n  \"v_geom\": {:.6},\n  \"v_inf_lin\": {:.6},\n  \"v_inf_quad\": {:.6},\n  \"r2_cont\": {:.6},\n  \"c_fit_j0\": {:.4},\n  \"r2_j0\": {:.5},\n  \"c_hi_j0\": {:.4},\n  \"c_fit_j25_sym\": {:.4},\n  \"r2_j25_sym\": {:.5},\n  \"c_hi_j25_sym\": {:.4},\n  \"mis_uv\": {:.4},\n  \"mis_3d_coulomb_ir\": {:.4},\n  \"rg_factor_3d_phot\": {:.4},\n  \"mis_1d_schwinger_ir\": {:.6}\n}}\n",
             out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7], out[8], out[9], out[10], out[11], out[12], out[14 + 10 + 4]
         );
-        let _ = write_research_file("via_c_continuum_traj.csv", &csv_cont);
-        let _ = write_research_file("via_c_cft_scaling.csv", &csv_cft);
-        let _ = write_research_file("via_c_scaling_resumen.json", &json);
+        save_research_or_fail("via_c_continuum_traj.csv", &csv_cont, &mut had_io_err);
+        save_research_or_fail("via_c_cft_scaling.csv", &csv_cft, &mut had_io_err);
+        save_research_or_fail("via_c_scaling_resumen.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_c_continuum_traj.csv + via_c_cft_scaling.csv + via_c_scaling_resumen.json ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -537,9 +620,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 22. [Fase 20 — Vía A Yee-4 S₄] Acoplamiento real 6³ (Iso-SC+FCC S₄ + Yee-4 S₄) + propagación polarizada 16³ ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_a_coupled_yee4_3d(0.25);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_a_coupled_yee4_3d(0.25);
+        let out = u2.open_quantum_out_slice();
         println!(
             "  Malla 6³ acoplada: norm_drift={:.2e}, gauss={:.2e}, gauge_ρ={:.2e}, gauge_E={:.2e}",
             out[0], out[1], out[2], out[3]
@@ -557,14 +639,14 @@ fn main() {
             out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7], out[8],
             out[9], out[10], out[10] / out[9].max(1e-16), out[11], out[12]
         );
-        let _ = write_research_file("via_a_coupled_yee4.json", &json);
+        save_research_or_fail("via_a_coupled_yee4.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_a_coupled_yee4.json ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
     if run_p20 || task == "via-b-wl" {
         let t0 = Instant::now();
         println!("=== 23. [Fase 20 — Vía B Wang–Landau + m/N_f] Reponderación continua sobre barrera 1.er orden + barrido masa/N_f ===");
-        let wl_tasks: [(usize, usize, usize); 7] = [
+        let wl_tasks: Vec<(usize, usize, usize)> = vec![
             (20, 0, 5000),
             (28, 0, 5000),
             (36, 0, 4500),
@@ -573,15 +655,8 @@ fn main() {
             (28, 1, 4000),
             (36, 1, 3500),
         ];
-        let wl_runs: Vec<_> = std::thread::scope(|sc| {
-            let hs: Vec<_> = wl_tasks
-                .into_iter()
-                .enumerate()
-                .map(|(i, (n, nf, st))| {
-                    sc.spawn(move || run_via_b_wang_landau_2d(n, nf, 0.80, st, 0x20B0_7777 ^ (i as u64 * 104729)))
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        let wl_runs = run_bounded_parallel(wl_tasks, |i, &(n, nf, st)| {
+            run_via_b_wang_landau_2d(n, nf, 0.80, st, 0x20B0_7777 ^ (i as u64 * 104729))
         });
         let mut csv_wl = String::from("N,Nf,m_scalar,beta_c_wl,chi_peak_wl,binder_min_wl,latent_heat,barrier_df,dmm_b0,visited_frac\n");
         for w in &wl_runs {
@@ -604,8 +679,8 @@ fn main() {
             );
             csv_sw.push_str(&format!("36,{:.0},{:.2},{:.6},{:.6},{:.4}\n", r[0], r[1], r[2], r[3], r[4]));
         }
-        let _ = write_research_file("via_b_wl_multicanonical.csv", &csv_wl);
-        let _ = write_research_file("via_b_matter_mass_nf.csv", &csv_sw);
+        save_research_or_fail("via_b_wl_multicanonical.csv", &csv_wl, &mut had_io_err);
+        save_research_or_fail("via_b_matter_mass_nf.csv", &csv_sw, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_b_wl_multicanonical.csv + via_b_matter_mass_nf.csv ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -613,9 +688,8 @@ fn main() {
         let t0 = Instant::now();
         println!("=== 24. [Fase 20 — Vía C TDVP + BKT] 2-site U(1)-TDVP en tiempo real (L = 32 sitios, 2³² estados) + diagrama BKT ===");
         let mut u2 = QuantumSpacetimeUniverse::new(16, 16, 1, 0.5, 0.1, 1.0);
-        let p = u2.via_c_tdvp_and_bkt_diagram(16, 36);
-        let len = u2.open_quantum_out_len() as usize;
-        let out = unsafe { std::slice::from_raw_parts(p, len) };
+        let _ = u2.via_c_tdvp_and_bkt_diagram(16, 36);
+        let out = u2.open_quantum_out_slice();
         println!(
             "  2-site U(1)-TDVP (N_r = {:.0}, L = {:.0}, χ = 36): J=0 vA={:.4}, vB={:.4} (mis={:.3}) | J=0,50 vA={:.4}, vB={:.4} (mis={:.3}) | drift_E={:.2e}",
             out[0], 2.0 * out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]
@@ -635,8 +709,8 @@ fn main() {
             "{{\n  \"via\": \"C-TDVP-BKT\",\n  \"nr_tdvp\": {:.0},\n  \"l_sites\": {:.0},\n  \"chi_tdvp\": 36,\n  \"vA_LC_J0\": {:.6},\n  \"vB_LC_J0\": {:.6},\n  \"mismatch_LC_J0\": {:.6},\n  \"vA_LC_J050\": {:.6},\n  \"vB_LC_J050\": {:.6},\n  \"mismatch_LC_J050\": {:.6},\n  \"max_energy_drift\": {:.6e}\n}}\n",
             out[0], 2.0 * out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7]
         );
-        let _ = write_research_file("via_c_tdvp_bkt.csv", &csv_bkt);
-        let _ = write_research_file("via_c_tdvp_resumen.json", &json);
+        save_research_or_fail("via_c_tdvp_bkt.csv", &csv_bkt, &mut had_io_err);
+        save_research_or_fail("via_c_tdvp_resumen.json", &json, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_c_tdvp_bkt.csv + via_c_tdvp_resumen.json ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -652,7 +726,7 @@ fn main() {
             );
             csv.push_str(&format!("{:.4},{:.4},{:.0},{:.6},{:.6},{:.6},{:.6}\n", r[0], r[1], r[2], r[3], r[4], r[5], r[6]));
         }
-        let _ = write_research_file("via_c_chi_convergence.csv", &csv);
+        save_research_or_fail("via_c_chi_convergence.csv", &csv, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_c_chi_convergence.csv ({:.2} s)", t0.elapsed().as_secs_f64());
     }
 
@@ -675,12 +749,8 @@ fn main() {
                 wl_jobs.push((gi, n, nf, st, seed));
             }
         }
-        let wl_all: Vec<_> = std::thread::scope(|sc| {
-            let hs: Vec<_> = wl_jobs
-                .into_iter()
-                .map(|(gi, n, nf, st, sd)| sc.spawn(move || (gi, run_via_b_wang_landau_2d(n, nf, 0.80, st, sd))))
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        let wl_all = run_bounded_parallel(wl_jobs, |_, &(gi, n, nf, st, sd)| {
+            (gi, run_via_b_wang_landau_2d(n, nf, 0.80, st, sd))
         });
         let mut csv_ms = String::from("N,Nf,n_seeds,beta_c_mean,beta_c_sem,chi_mean,chi_sem,ds_mean,ds_sem,df_mean,df_sem,dmm0_mean,dmm0_sem,vis_mean\n");
         let mean_sem = |xs: &[f64]| -> (f64, f64) {
@@ -719,15 +789,8 @@ fn main() {
                 nf_jobs.push((n, nf, sw));
             }
         }
-        let nf_rows: Vec<[f64; 5]> = std::thread::scope(|sc| {
-            let hs: Vec<_> = nf_jobs
-                .into_iter()
-                .enumerate()
-                .map(|(i, (n, nf, sw))| {
-                    sc.spawn(move || run_via_b_large_nf_point(n, nf, 0.80, sw, 0x20B6_1111 ^ (i as u64 * 7919)))
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        let nf_rows = run_bounded_parallel(nf_jobs, |i, &(n, nf, sw)| {
+            run_via_b_large_nf_point(n, nf, 0.80, sw, 0x20B6_1111 ^ (i as u64 * 7919))
         });
         let mut csv_nf = String::from("N,Nf,m_scalar,dmm_mean,dmm_err,tau_int\n");
         println!("  --- Escalado finito de la transición a gran N_f (β = 0, m = 0,80) ---");
@@ -735,8 +798,12 @@ fn main() {
             println!("  N={:2.0}, Nf={:.0}: d_MM={:.4}±{:.4} (τ_int={:.2})", r[0], r[1], r[2], r[3], r[4]);
             csv_nf.push_str(&format!("{:.0},{:.0},0.80,{:.6},{:.6},{:.4}\n", r[0], r[1], r[2], r[3], r[4]));
         }
-        let _ = write_research_file("via_b_wl_multiseed.csv", &csv_ms);
-        let _ = write_research_file("via_b_large_nf_fss.csv", &csv_nf);
+        save_research_or_fail("via_b_wl_multiseed.csv", &csv_ms, &mut had_io_err);
+        save_research_or_fail("via_b_large_nf_fss.csv", &csv_nf, &mut had_io_err);
         println!("  Exportado datos_investigacion/via_b_wl_multiseed.csv + via_b_large_nf_fss.csv ({:.2} s)", t0.elapsed().as_secs_f64());
+    }
+
+    if had_io_err {
+        std::process::exit(1);
     }
 }

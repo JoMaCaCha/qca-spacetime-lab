@@ -16,6 +16,7 @@ use crate::linalg::eig;
 use crate::rng::SplitMix64;
 use crate::spinor::{band_projector_s, cx, m4_identity, m4_mul, m4_zero, pauli_eigenbasis, SpinorWalk, M4};
 use crate::sun::Algebra;
+use crate::util::{clamp_finite, fibonacci_sphere};
 use crate::QuantumSpacetimeUniverse;
 use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
@@ -279,7 +280,7 @@ impl Ring {
         // base ortonormal de cada subespacio (Gram–Schmidt por si hay degeneraciones)
         let mut order: Vec<usize> = (0..nn).collect();
         let eps: Vec<f64> = e.values.iter().map(|l| -l.arg()).collect();
-        order.sort_by(|&i, &j| eps[i].partial_cmp(&eps[j]).unwrap());
+        order.sort_by(|&i, &j| eps[i].total_cmp(&eps[j]));
         let mut basis: Vec<Vec<C64>> = Vec::with_capacity(nn);
         for &i in &order {
             let mut v = e.vectors[i].clone();
@@ -329,15 +330,7 @@ pub fn node_odd(node: u32) -> bool {
 
 /// n direcciones casi uniformes (esfera de Fibonacci).
 pub fn fibonacci_dirs(n: usize) -> Vec<[f64; 3]> {
-    let ga = PI * (3.0 - 5f64.sqrt());
-    (0..n)
-        .map(|i| {
-            let z = 1.0 - (2.0 * i as f64 + 1.0) / n as f64;
-            let r = (1.0 - z * z).max(0.0).sqrt();
-            let ph = ga * i as f64;
-            [r * ph.cos(), r * ph.sin(), z]
-        })
-        .collect()
+    fibonacci_sphere(n)
 }
 
 /// Secuencias de subpasos de la caminata alterna en 2 componentes de espín: matrices de cambio de
@@ -460,6 +453,9 @@ fn split_matrices(proc_: &Process3, sw: &SpinorWalk, s2: &Seq2, p: usize, k: [f6
 
 /// Integra un nodo: devuelve los pares por volumen y por paso, Σ_q w·n(q)/T.
 pub fn node_rate(proc_: Process3, node: u32, qmin: f64, qmax: f64, dq: f64, ndirs: usize, steps: u32) -> f64 {
+    if !qmin.is_finite() || !qmax.is_finite() || !dq.is_finite() || dq <= 0.0 || qmax < qmin {
+        return 0.0;
+    }
     let dim = proc_.dim();
     let mut sw = SpinorWalk::new();
     sw.ns = 4;
@@ -477,14 +473,17 @@ pub fn node_rate(proc_: Process3, node: u32, qmin: f64, qmax: f64, dq: f64, ndir
     };
     let k0 = node_k(node);
     let odd = node_odd(node);
+    let ndirs = ndirs.clamp(1, 256);
     let dirs = fibonacci_dirs(ndirs);
-    let nr = ((qmax - qmin) / dq).round().max(1.0) as usize;
+    let dq = dq.max(1e-5);
+    let nr = (((qmax - qmin) / dq).round().max(1.0) as usize).min(4096);
     let free = match proc_ {
         Process3::Higgs { mf, mh, .. } => Process3::Higgs { mf, mh, dm: 0.0 },
         Process3::W { mw, .. } => Process3::W { mw, theta0: 0.0 },
         Process3::Z { right, mz, .. } => Process3::Z { right, mz, phi0: 0.0 },
     };
-    let steps = steps + (steps & 1);
+    let steps = steps.min(200_000);
+    let steps = steps.saturating_add(steps & 1).max(2);
     let mut total = 0.0;
     for dir in &dirs {
         for ir in 0..nr {
@@ -668,12 +667,20 @@ impl QuantumSpacetimeUniverse {
     /// interferencia de Stückelberg entre cruces, y la resta quita los transitorios de los modos que
     /// están cruzando al final). theta = 0: caminata convencional; theta > m/2: la de Gupta y Short.
     pub fn pair_rate_schwinger(&mut self, m: f32, q_e: f32, modes: u32, theta: f32) -> f64 {
-        let lw = Lazy::new(m as f64, theta as f64);
-        let qe = (q_e as f64).abs().max(1e-6);
-        let l = (modes as usize).max(8);
+        if !q_e.is_finite() || (q_e as f64).abs() < 1e-6 {
+            return 0.0;
+        }
+        let mf = clamp_finite(m as f64, -10.0, 10.0, 0.1);
+        let th = clamp_finite(theta as f64, -PI, PI, 0.0);
+        let lw = Lazy::new(mf, th);
+        let qe = (q_e as f64).abs();
+        let l = (modes as usize).clamp(8, 4096);
         let mut sea = sea_1d(&lw, l);
-        let t1 = (1.5 / qe).round() as u32;
-        let t2 = (3.0 / qe).round() as u32;
+        let t2 = ((3.0 / qe).round() as u32).min(200_000);
+        let t1 = ((1.5 / qe).round() as u32).min(t2.saturating_sub(1));
+        if t2 <= t1 {
+            return 0.0;
+        }
         let mut qa = 0.0f64;
         let mut n1 = 0.0;
         let mut maxo = 0.0f64;
@@ -710,17 +717,19 @@ impl QuantumSpacetimeUniverse {
 
     /// Velocidad de la banda en el hueco: ajuste de ε² = m² + c²·k² cerca de k = 0.
     pub fn lazy_walk_c_eff(&self, m: f32, theta: f32) -> f64 {
-        lazy_c_eff(m as f64, theta as f64)
+        lazy_c_eff(clamp_finite(m as f64, -10.0, 10.0, 0.1), clamp_finite(theta as f64, -PI, PI, 0.0))
     }
 
     /// §2.23: mar lleno en 1D (4096 modos) con un campo homogéneo E(0) = e0: devuelve j(t) (corriente
     /// por celda) y E(t), 2·steps valores. Con `backreaction`, E ← E − q·j; siempre A ← A − E.
     pub fn homogeneous_sea_run(&mut self, m: f32, theta: f32, q: f32, e0: f32, backreaction: bool, steps: u32) -> *const f64 {
-        let lw = Lazy::new(m as f64, theta as f64);
+        let lw = Lazy::new(clamp_finite(m as f64, -10.0, 10.0, 0.1), clamp_finite(theta as f64, -PI, PI, 0.0));
         let l = 4096usize;
         let mut sea = sea_1d(&lw, l);
-        let (q, mut e, mut a) = (q as f64, e0 as f64, 0.0f64);
-        let steps = steps as usize;
+        let q = clamp_finite(q as f64, -10.0, 10.0, 0.1);
+        let mut e = clamp_finite(e0 as f64, -10.0, 10.0, 0.0);
+        let mut a = 0.0f64;
+        let steps = (steps as usize).min(200_000);
         let mut out = vec![0.0; 2 * steps];
         for t in 0..steps {
             let mut j = 0.0;
@@ -744,7 +753,8 @@ impl QuantumSpacetimeUniverse {
     /// §3.21: el mar de la caminata convencional en un anillo de `cells` celdas con fases de enlace
     /// aleatorias en [−π, π) que cambian cada paso: máximo de |n − 1| y de |j| en `steps` pasos.
     pub fn sea_inertness(&mut self, cells: u32, steps: u32, seed: u64) -> f64 {
-        let n = (cells as usize).max(4) & !1;
+        let n = (cells as usize).clamp(4, 512) & !1;
+        let steps = steps.min(200_000);
         let mut ring = Ring::new(n, 0.1, 0.0, 1.0, n / 2);
         ring.backreaction = false;
         let mut rng = SplitMix64::new(seed);
@@ -766,13 +776,17 @@ impl QuantumSpacetimeUniverse {
     /// E = q entre ellas, y la reacción E ← E − q·j, A ← A − E en cada paso. Vacío libre al empezar.
     pub fn string_breaking_start(&mut self, cells: u32, m: f32, theta: f32, q: f32, d: u32) {
         let n = (cells as usize).clamp(8, 512) & !1;
-        self.pairs.ring = Some(Ring::new(n, m as f64, theta as f64, q as f64, d as usize));
+        let mf = clamp_finite(m as f64, -10.0, 10.0, 0.1);
+        let th = clamp_finite(theta as f64, -PI, PI, 0.0);
+        let qf = clamp_finite(q as f64, -10.0, 10.0, 0.2);
+        self.pairs.ring = Some(Ring::new(n, mf, th, qf, d as usize));
         self.string_breaking_refresh();
     }
 
     /// Avanza y devuelve [campo medio dentro, carga inducida junto a +q y −q, residuo de Gauss,
     /// energía del campo].
     pub fn string_breaking_step(&mut self, steps: u32) -> *const f64 {
+        let steps = steps.min(200_000);
         if let Some(r) = self.pairs.ring.as_mut() {
             for _ in 0..steps {
                 r.step();
@@ -809,7 +823,10 @@ impl QuantumSpacetimeUniverse {
     /// i_z con k_a ∈ {0, π/2, π, −π/2}); 24 direcciones, |q| ∈ [0,01; 0,40] con paso 0,0004. Pares
     /// por celda y paso.
     pub fn pair_rate_decay(&mut self, kind: u32, node: u32, m_f: f32, m_boson: f32, amplitude: f32, steps: u32) -> f64 {
-        let p = if kind == 0 { Process3::Higgs { mf: m_f as f64, mh: m_boson as f64, dm: amplitude as f64 } } else { Process3::W { mw: m_boson as f64, theta0: amplitude as f64 } };
+        let mf = clamp_finite(m_f as f64, -10.0, 10.0, 0.1);
+        let mb = clamp_finite(m_boson as f64, -10.0, 10.0, 0.4);
+        let amp = clamp_finite(amplitude as f64, -10.0, 10.0, 0.0);
+        let p = if kind == 0 { Process3::Higgs { mf, mh: mb, dm: amp } } else { Process3::W { mw: mb, theta0: amp } };
         node_rate(p, node, 0.01, 0.40, 0.0004, 24, steps)
     }
 
@@ -817,24 +834,29 @@ impl QuantumSpacetimeUniverse {
     /// resonancia, o un cálculo más rápido en el navegador).
     #[allow(clippy::too_many_arguments)]
     pub fn pair_rate_decay_window(&mut self, kind: u32, node: u32, m_f: f32, m_boson: f32, amplitude: f32, steps: u32, qmin: f32, qmax: f32, dq: f32) -> f64 {
+        let mf = clamp_finite(m_f as f64, -10.0, 10.0, 0.1);
+        let mb = clamp_finite(m_boson as f64, -10.0, 10.0, 0.4);
+        let amp = clamp_finite(amplitude as f64, -10.0, 10.0, 0.0);
         let p = match kind {
-            0 => Process3::Higgs { mf: m_f as f64, mh: m_boson as f64, dm: amplitude as f64 },
-            1 => Process3::W { mw: m_boson as f64, theta0: amplitude as f64 },
-            2 => Process3::Z { right: false, mz: m_boson as f64, phi0: amplitude as f64 },
-            _ => Process3::Z { right: true, mz: m_boson as f64, phi0: amplitude as f64 },
+            0 => Process3::Higgs { mf, mh: mb, dm: amp },
+            1 => Process3::W { mw: mb, theta0: amp },
+            2 => Process3::Z { right: false, mz: mb, phi0: amp },
+            _ => Process3::Z { right: true, mz: mb, phi0: amp },
         };
-        node_rate(p, node, qmin as f64, qmax as f64, (dq as f64).max(1e-5), 24, steps)
+        node_rate(p, node, qmin as f64, qmax as f64, dq as f64, 24, steps)
     }
 
     /// §2.23: Weyl sin masa (L o R) con una fase abeliana homogénea φ(t) = φ₀·cos(M·t) en los enlaces
     /// z (la φ_f del Z); pares por celda y paso en el nodo.
     pub fn pair_rate_z(&mut self, node: u32, right_handed: bool, m_z: f32, phase_amplitude: f32, steps: u32) -> f64 {
-        node_rate(Process3::Z { right: right_handed, mz: m_z as f64, phi0: phase_amplitude as f64 }, node, 0.01, 0.40, 0.0004, 24, steps)
+        let mz = clamp_finite(m_z as f64, -10.0, 10.0, 0.4);
+        let phi0 = clamp_finite(phase_amplitude as f64, -10.0, 10.0, 0.0);
+        node_rate(Process3::Z { right: right_handed, mz, phi0 }, node, 0.01, 0.40, 0.0004, 24, steps)
     }
 
     /// Fracciones del Z a nivel árbol: [invisible, hadrones, leptones cargados, Γ(νν̄)/Γ(ℓ⁺ℓ⁻)].
     pub fn z_branching_ptr(&mut self, s2w: f32) -> *const f64 {
-        self.pairs.z_branch = z_branching(s2w as f64).to_vec();
+        self.pairs.z_branch = z_branching(clamp_finite(s2w as f64, 0.0, 1.0, 0.231)).to_vec();
         self.pairs.z_branch.as_ptr()
     }
 
@@ -843,10 +865,13 @@ impl QuantumSpacetimeUniverse {
     /// lleno de cada color (`modes` valores de k). Tasa de pares por celda y paso: la pendiente entre
     /// los barridos de k de 1,5 y 3,0 del canal de mayor |λ| (|λ|·g·E·t = 1,5 y 3,0).
     pub fn pair_rate_colour_schwinger(&mut self, n: &[f32], g_e: f32, m: f32, theta: f32, modes: u32) -> f64 {
+        if !g_e.is_finite() || (g_e as f64).abs() < 1e-6 {
+            return 0.0;
+        }
         let alg = Algebra::new(3);
         let mut nv = [0.0f64; 8];
         for (i, v) in n.iter().take(8).enumerate() {
-            nv[i] = *v as f64;
+            nv[i] = if v.is_finite() { *v as f64 } else { 0.0 };
         }
         let nn = nv.iter().map(|x| x * x).sum::<f64>().sqrt();
         if nn < 1e-12 {
@@ -865,9 +890,9 @@ impl QuantumSpacetimeUniverse {
         let lam: Vec<f64> = e.values.iter().map(|l| l.re).collect();
         let vecs = e.vectors.clone();
         let lmax = lam.iter().fold(0.0f64, |m, l| m.max(l.abs())).max(1e-6);
-        let ge = (g_e as f64).abs().max(1e-6);
-        let lw = Lazy::new(m as f64, theta as f64);
-        let l = (modes as usize).max(8);
+        let ge = (g_e as f64).abs();
+        let lw = Lazy::new(clamp_finite(m as f64, -10.0, 10.0, 0.1), clamp_finite(theta as f64, -PI, PI, 0.0));
+        let l = (modes as usize).clamp(8, 4096);
         // mar: banda negativa ⊗ cada color de la base estándar
         let base = sea_1d(&lw, l);
         let mut sea: Vec<[[C64; 3]; 2]> = Vec::with_capacity(3 * l);
@@ -879,8 +904,11 @@ impl QuantumSpacetimeUniverse {
                 sea.push(v);
             }
         }
-        let t1 = (1.5 / (ge * lmax)).round() as u32;
-        let t2 = (3.0 / (ge * lmax)).round() as u32;
+        let t2 = ((3.0 / (ge * lmax)).round() as u32).min(200_000);
+        let t1 = ((1.5 / (ge * lmax)).round() as u32).min(t2.saturating_sub(1));
+        if t2 <= t1 {
+            return 0.0;
+        }
         let count = |sea: &[[[C64; 3]; 2]], th: f64| -> f64 {
             // en el canal i (autovector e_i, autovalor λ_i) el salto a la derecha lleva e^{−iλ_iθ}, que
             // es e^{iqA} con q·A = −λ_i·θ: κ = k − q·A = k + λ_i·θ
@@ -953,7 +981,7 @@ impl QuantumSpacetimeUniverse {
         let alg = Algebra::new(3);
         let mut nv = [0.0f64; 8];
         for (i, v) in n.iter().take(8).enumerate() {
-            nv[i] = *v as f64;
+            nv[i] = if v.is_finite() { *v as f64 } else { 0.0 };
         }
         let nn = nv.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-300);
         nv.iter_mut().for_each(|x| *x /= nn);
@@ -965,7 +993,7 @@ impl QuantumSpacetimeUniverse {
             }
         }
         let mut l: Vec<f64> = eig(a, 3).values.iter().map(|v| v.re).collect();
-        l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        l.sort_by(f64::total_cmp);
         l
     }
 
@@ -977,17 +1005,17 @@ impl QuantumSpacetimeUniverse {
     /// Devuelve [chi_re, chi_im, gamma_pair, chi_im_from_pairs, omega_eff].
     #[allow(clippy::too_many_arguments)]
     pub fn vacuum_polarization_spectrum(&self, m: f32, theta: f32, q: f32, omega: f32, e0: f32, modes: u32, steps: u32) -> Vec<f64> {
-        let mf = (m as f64).clamp(0.02, 1.2);
-        let th = theta as f64;
-        let qf = (q as f64).abs().max(1e-6);
-        let om = (omega as f64).clamp(1e-3, PI - 0.05);
-        let amp_e = (e0 as f64).abs().max(1e-7);
+        let mf = clamp_finite(m as f64, 0.02, 1.2, 0.15);
+        let th = clamp_finite(theta as f64, -PI, PI, 0.0);
+        let qf = clamp_finite((q as f64).abs(), 1e-6, 10.0, 0.1);
+        let om = clamp_finite(omega as f64, 1e-3, PI - 0.05, 0.5);
+        let amp_e = clamp_finite((e0 as f64).abs(), 1e-7, 10.0, 1e-3);
         let l = (modes as usize).clamp(32, 2048);
         let lw = Lazy::new(mf, th);
         let mut sea = sea_1d(&lw, l);
         let w_lat = 2.0 * (0.5 * om).sin();
         let a0 = amp_e / w_lat;
-        let t_total = (steps as usize).max(120);
+        let t_total = (steps as usize).clamp(120, 200_000);
         let t_ramp = (t_total / 3).max(40);
         // Ajuste por mínimos cuadrados de J(t) = c0 + ac·cos(ω t_mid) + as·sin(ω t_mid) tras la rampa
         let mut m_mat = [[0.0f64; 3]; 3];
@@ -1068,7 +1096,7 @@ impl QuantumSpacetimeUniverse {
             for c in (r + 1)..3 {
                 s -= aug[r][c] * sol[c];
             }
-            sol[r] = s / aug[r][r];
+            sol[r] = if aug[r][r].abs() > 1e-15 { s / aug[r][r] } else { 0.0 };
         }
         let ac = sol[1];
         let as_ = sol[2];
@@ -1090,9 +1118,9 @@ impl QuantumSpacetimeUniverse {
     ///   - 2·m (umbral de creación de pares) y c_ef.
     /// Devuelve [chi0_kk, chi0_cont, frac_threshold, shift_4pct_rel, two_m, c_ef].
     pub fn kramers_kronig_vp_check(&self, m: f32, theta: f32, q: f32) -> Vec<f64> {
-        let mf = (m as f64).clamp(0.03, 1.0);
-        let th = theta as f64;
-        let qf = (q as f64).abs().max(1e-6);
+        let mf = clamp_finite(m as f64, 0.03, 1.0, 0.15);
+        let th = clamp_finite(theta as f64, -PI, PI, 0.0);
+        let qf = clamp_finite((q as f64).abs(), 1e-6, 10.0, 0.1);
         let lw = Lazy::new(mf, th);
         let c_ef = lazy_c_eff(mf, th);
         let chi_cont = qf * qf * c_ef / (6.0 * PI * mf * mf);
@@ -1143,9 +1171,9 @@ impl QuantumSpacetimeUniverse {
     /// acoplamiento g_bs) frente a Z′ → μ_L⁺ μ_L⁻ (acoplamiento g_mu).
     /// Devuelve [tasa_bs_total, tasa_mu, razon_medida, razon_teorica_6_gbs2_gmu2].
     pub fn pair_rate_zprime(&self, node: u32, m_zp: f32, g_bs: f32, g_mu: f32, steps: u32) -> Vec<f64> {
-        let mz = (m_zp as f64).clamp(0.1, 1.0);
-        let gb = (g_bs as f64).abs().clamp(1e-6, 0.1);
-        let gm = (g_mu as f64).abs().clamp(1e-6, 0.1);
+        let mz = clamp_finite(m_zp as f64, 0.1, 1.0, 0.4);
+        let gb = clamp_finite((g_bs as f64).abs(), 1e-6, 0.1, 1e-3);
+        let gm = clamp_finite((g_mu as f64).abs(), 1e-6, 0.1, 1e-3);
         let st = steps.clamp(100, 2000);
         // Ventana estrecha alrededor de la resonancia |q| ≈ M_Z'/2 para precisión y rapidez
         let q0 = 0.5 * mz;

@@ -55,24 +55,30 @@ impl<T: FftNum> FftN<T> {
 
     fn axis_pass(&mut self, data: &mut [Complex<T>], axis: usize, inverse: bool) {
         let (w, h, d) = (self.w, self.h, self.d);
+        if data.len() < self.len() || self.len() == 0 {
+            return;
+        }
         match axis {
             0 => {
                 let f = if inverse { &self.ix } else { &self.fx };
-                f.process_with_scratch(data, &mut self.scratch);
+                f.process_with_scratch(&mut data[..self.len()], &mut self.scratch);
             }
             1 => {
                 if h <= 1 {
                     return;
                 }
-                let f = if inverse { self.iy.clone() } else { self.fy.clone() };
+                let f = if inverse { &*self.iy } else { &*self.fy };
+                let line = &mut self.line[..h];
+                let scratch = &mut self.scratch;
                 for z in 0..d {
+                    let plane = z * h * w;
                     for x in 0..w {
                         for y in 0..h {
-                            self.line[y] = data[(z * h + y) * w + x];
+                            line[y] = data[plane + y * w + x];
                         }
-                        f.process_with_scratch(&mut self.line[..h], &mut self.scratch);
+                        f.process_with_scratch(line, scratch);
                         for y in 0..h {
-                            data[(z * h + y) * w + x] = self.line[y];
+                            data[plane + y * w + x] = line[y];
                         }
                     }
                 }
@@ -81,15 +87,20 @@ impl<T: FftNum> FftN<T> {
                 if d <= 1 {
                     return;
                 }
-                let f = if inverse { self.iz.clone() } else { self.fz.clone() };
+                let f = if inverse { &*self.iz } else { &*self.fz };
+                let line = &mut self.line[..d];
+                let scratch = &mut self.scratch;
+                let wh = w * h;
                 for y in 0..h {
+                    let yw = y * w;
                     for x in 0..w {
+                        let base = yw + x;
                         for z in 0..d {
-                            self.line[z] = data[(z * h + y) * w + x];
+                            line[z] = data[z * wh + base];
                         }
-                        f.process_with_scratch(&mut self.line[..d], &mut self.scratch);
+                        f.process_with_scratch(line, scratch);
                         for z in 0..d {
-                            data[(z * h + y) * w + x] = self.line[z];
+                            data[z * wh + base] = line[z];
                         }
                     }
                 }
@@ -99,6 +110,9 @@ impl<T: FftNum> FftN<T> {
 
     /// Transformada directa sin normalizar.
     pub fn forward(&mut self, data: &mut [Complex<T>]) {
+        if self.len() == 0 || data.len() < self.len() {
+            return;
+        }
         for a in 0..3 {
             self.axis_pass(data, a, false);
         }
@@ -106,12 +120,18 @@ impl<T: FftNum> FftN<T> {
 
     /// Transformada inversa normalizada (divide por N).
     pub fn inverse(&mut self, data: &mut [Complex<T>]) {
+        let n = self.len();
+        if n == 0 || data.len() < n {
+            return;
+        }
         for a in 0..3 {
             self.axis_pass(data, a, true);
         }
-        let inv = T::one() / T::from_usize(self.len()).unwrap();
-        for v in data.iter_mut() {
-            *v = *v * inv;
+        if let Some(nf) = T::from_usize(n) {
+            let inv = T::one() / nf;
+            for v in data[..n].iter_mut() {
+                *v = *v * inv;
+            }
         }
     }
 }

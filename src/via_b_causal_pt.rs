@@ -8,16 +8,40 @@ use crate::research_io::{block_bootstrap_mean_err, integrated_autocorr_time, lin
 #[cfg(not(target_arch = "wasm32"))]
 use crate::research_io::{read_research_file, write_research_file};
 use crate::rng::SplitMix64;
+use crate::util::mm_dim_2d;
 use crate::QuantumSpacetimeUniverse;
-use std::f64::consts::PI;
 use wasm_bindgen::prelude::*;
+
+/// Workspace reutilizable para evitar asignaciones de heap en el bucle interno de Monte Carlo.
+struct OrderEvalScratch {
+    gr: Vec<f64>,
+    d_col: Vec<f64>,
+    mat: Vec<f64>,
+}
+
+impl OrderEvalScratch {
+    fn new(n: usize, need_matter: bool) -> Self {
+        let len = if need_matter { n * n } else { 0 };
+        Self {
+            gr: vec![0.0; len],
+            d_col: vec![0.0; len],
+            mat: vec![0.0; len],
+        }
+    }
+}
 
 /// Evalúa en un 2-orden `perm` (hasta N = 128 elementos con `u128`):
 ///   - S_BD = N − 2 N₁ + 4 N₂ − 2 N₃ (acción exacta de Benincasa–Dowker),
 ///   - número de relaciones causales `n_rel`,
 ///   - acción cuántica de 1 lazo de Sorkin–Johnston S_mat = ½ ln det(I + Δ^T Δ) (solo si `need_matter`).
-fn eval_2order_fast(perm: &[usize], m_scalar: f64, need_matter: bool) -> (f64, f64, usize) {
+fn eval_2order_fast_scratch(
+    perm: &[usize],
+    m_scalar: f64,
+    need_matter: bool,
+    sc: &mut OrderEvalScratch,
+) -> (f64, f64, usize) {
     let n = perm.len();
+    assert!(n <= 128, "eval_2order_fast requiere N <= 128 (recibido {n})");
     let mut fut = [0u128; 128];
     let mut past = [0u128; 128];
     let mut n_rel = 0usize;
@@ -52,9 +76,20 @@ fn eval_2order_fast(perm: &[usize], m_scalar: f64, need_matter: bool) -> (f64, f
         return (s_bd, 0.0, n_rel);
     }
 
+    let n2_len = n * n;
+    if sc.gr.len() < n2_len {
+        sc.gr.resize(n2_len, 0.0);
+        sc.d_col.resize(n2_len, 0.0);
+        sc.mat.resize(n2_len, 0.0);
+    }
+    let gr = &mut sc.gr[..n2_len];
+    let d_col = &mut sc.d_col[..n2_len];
+    let mat = &mut sc.mat[..n2_len];
+    gr.fill(0.0);
+    d_col.fill(0.0);
+
     // 1. Propagador retardado exacto de Johnston (PRL 2009): (I + ½ m² C) G_R = ½ C
     // Aprovechamos `fut[i] & past[j]` para iterar SOLO sobre k con i ≺ k ≺ j!
-    let mut gr = vec![0.0; n * n];
     let c_mass = 0.5 * m_scalar * m_scalar;
     for j in 1..n {
         let pj = past[j];
@@ -74,7 +109,6 @@ fn eval_2order_fast(perm: &[usize], m_scalar: f64, need_matter: bool) -> (f64, f
     }
 
     // 2. Empaquetado por columnas de Δ = G_R − G_R^T: d_col[i * n + k] = Δ[k, i]
-    let mut d_col = vec![0.0; n * n];
     for i in 0..n {
         let mut mask = fut[i];
         while mask != 0 {
@@ -87,7 +121,6 @@ fn eval_2order_fast(perm: &[usize], m_scalar: f64, need_matter: bool) -> (f64, f
     }
 
     // 3. M = I + Δ^T Δ (triángulo inferior) y factorización de Cholesky in-place
-    let mut mat = vec![0.0; n * n];
     for i in 0..n {
         let ci = &d_col[(i * n)..((i + 1) * n)];
         for j in 0..=i {
@@ -122,6 +155,7 @@ fn eval_2order_fast(perm: &[usize], m_scalar: f64, need_matter: bool) -> (f64, f
 /// de materia clásica de Ising (benchmark estilo Glaser–Surya).
 fn eval_2order_with_ising(perm: &[usize], spins: &[i8]) -> (f64, f64, usize) {
     let n = perm.len();
+    assert!(n <= 128 && spins.len() >= n, "eval_2order_with_ising requiere N <= 128 y spins.len() >= N");
     let mut fut = [0u128; 128];
     let mut past = [0u128; 128];
     let mut n_rel = 0usize;
@@ -158,47 +192,6 @@ fn eval_2order_with_ising(perm: &[usize], spins: &[i8]) -> (f64, f64, usize) {
     }
     let s_bd = (n as i64 - 2 * n1 + 4 * n2 - 2 * n3) as f64;
     (s_bd, e_ising as f64, n_rel)
-}
-
-fn mm_dim_2d(r_frac: f64) -> f64 {
-    let f = |d: f64| -> f64 {
-        let lgamma = |z: f64| -> f64 {
-            let p = [
-                676.5203681218851,
-                -1259.1392167224028,
-                771.32342877765313,
-                -176.61502916214059,
-                12.507343278686905,
-                -0.13857109526572012,
-                9.9843695780195716e-6,
-                1.5056327351493116e-7,
-            ];
-            let mut x = 0.99999999999980993;
-            let zm1 = z - 1.0;
-            for (k, &c) in p.iter().enumerate() {
-                x += c / (zm1 + (k + 1) as f64);
-            }
-            let t = zm1 + 7.5;
-            0.5 * (2.0 * PI).ln() + (zm1 + 0.5) * t.ln() - t + x.ln()
-        };
-        (lgamma(d + 1.0) + lgamma(0.5 * d) - 2.0f64.ln() - lgamma(1.5 * d)).exp()
-    };
-    if r_frac <= 0.01 {
-        return 6.0;
-    }
-    if r_frac >= 0.999 {
-        return 1.0;
-    }
-    let (mut lo, mut hi) = (1.0, 6.0);
-    for _ in 0..45 {
-        let mid = 0.5 * (lo + hi);
-        if f(mid) > r_frac {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
 }
 
 /// Resultado de un punto de la escalera de *Parallel Tempering* (1 réplica β_m).
@@ -244,6 +237,7 @@ pub fn run_parallel_tempering_2d(
     seed: u64,
 ) -> PtRunResult {
     let n = n_elem.clamp(12, 96);
+    assert!(!betas.is_empty(), "run_parallel_tempering_2d requiere al menos una temperatura β");
     let m_rep = betas.len();
     let therm = sweeps / 3;
     let m_scalar = 0.8f64;
@@ -251,6 +245,7 @@ pub fn run_parallel_tempering_2d(
     let is_ising = matter_mode < 0;
     let j_ising = 0.45f64;
     let pairs_tot = (n * (n - 1)) as f64;
+    let mut sc = OrderEvalScratch::new(n, matter_mode > 0);
 
     let mut rng = SplitMix64::new(seed ^ ((n as u64) << 24) ^ ((matter_mode as u64).wrapping_mul(0x9E37_79B9)));
     let mut perms: Vec<Vec<usize>> = Vec::with_capacity(m_rep);
@@ -269,7 +264,7 @@ pub fn run_parallel_tempering_2d(
         let (sb, mt, nr) = if is_ising {
             eval_2order_with_ising(&p, &sp)
         } else {
-            eval_2order_fast(&p, m_scalar, matter_mode > 0)
+            eval_2order_fast_scratch(&p, m_scalar, matter_mode > 0, &mut sc)
         };
         perms.push(p);
         spins.push(sp);
@@ -303,7 +298,7 @@ pub fn run_parallel_tempering_2d(
                 let (sn, mn, rn) = if is_ising {
                     eval_2order_with_ising(&perms[r], &spins[r])
                 } else {
-                    eval_2order_fast(&perms[r], m_scalar, matter_mode > 0)
+                    eval_2order_fast_scratch(&perms[r], m_scalar, matter_mode > 0, &mut sc)
                 };
                 let dw = if is_ising {
                     beta * (sn - s_cur[r]) - j_ising * (mn - m_cur[r])
@@ -478,6 +473,24 @@ fn adapt_beta_segment(betas: &mut [f64], pair_acc: &[f64], lo: usize, hi: usize)
     }
 }
 
+/// Valida que la etiqueta de checkpoint contenga solo `[A-Za-z0-9_-]`.
+#[cfg(not(target_arch = "wasm32"))]
+fn sanitize_ckpt_tag(tag: &str) -> Option<&str> {
+    if tag.is_empty() || tag.len() > 64 {
+        return None;
+    }
+    if tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        Some(tag)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn json_f64(v: f64) -> f64 {
+    if v.is_finite() { v } else { 0.0 }
+}
+
 /// Serializa un *checkpoint* JSON ligero y reanudable de una corrida PT (solo nativo).
 #[cfg(not(target_arch = "wasm32"))]
 fn save_pt_checkpoint(
@@ -490,19 +503,27 @@ fn save_pt_checkpoint(
     spins: &[Vec<i8>],
     res: &PtRunResult,
 ) {
+    let Some(clean_tag) = sanitize_ckpt_tag(tag) else {
+        eprintln!("[via_b] etiqueta de checkpoint inválida rechazada: {:?}", tag);
+        return;
+    };
     let mut s = String::new();
     s.push_str("{\n");
     s.push_str(&format!("  \"n_elem\": {},\n  \"matter_mode\": {},\n  \"sweeps\": {},\n", n_elem, matter_mode, sweeps));
     s.push_str(&format!(
         "  \"swap_acc\": {:.6},\n  \"min_pair_swap\": {:.6},\n  \"beta_c_main\": {:.6},\n  \"chi_peak_main\": {:.6},\n  \"binder_min_main\": {:.6},\n",
-        res.swap_acceptance, res.min_pair_swap, res.beta_c_main, res.chi_peak_main, res.binder_min_main
+        json_f64(res.swap_acceptance),
+        json_f64(res.min_pair_swap),
+        json_f64(res.beta_c_main),
+        json_f64(res.chi_peak_main),
+        json_f64(res.binder_min_main)
     ));
     s.push_str("  \"betas\": [");
     for (i, b) in betas.iter().enumerate() {
         if i > 0 {
             s.push_str(", ");
         }
-        s.push_str(&format!("{:.6}", b));
+        s.push_str(&format!("{:.6}", json_f64(*b)));
     }
     s.push_str("],\n  \"perms\": [\n");
     for (r, p) in perms.iter().enumerate() {
@@ -527,13 +548,17 @@ fn save_pt_checkpoint(
         s.push_str(if r + 1 < spins.len() { "],\n" } else { "]\n" });
     }
     s.push_str("  ]\n}\n");
-    let _ = write_research_file(&format!("checkpoints/{}.json", tag), &s);
+    if let Err(e) = write_research_file(&format!("checkpoints/{}.json", clean_tag), &s) {
+        eprintln!("[via_b] error guardando checkpoint {}: {}", clean_tag, e);
+    }
 }
 
-/// Intenta cargar las permutaciones y espines iniciales desde un checkpoint existente (solo nativo).
+/// Intenta cargar las permutaciones y espines iniciales desde un checkpoint existente (solo nativo),
+/// validando estrictamente que cada permutación sea una biyección de `0..n_elem` y cada espín sea `±1`.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_pt_checkpoint_states(tag: &str, n_elem: usize, m_rep: usize) -> Option<(Vec<Vec<usize>>, Vec<Vec<i8>>)> {
-    let txt = read_research_file(&format!("checkpoints/{}.json", tag))?;
+    let clean_tag = sanitize_ckpt_tag(tag)?;
+    let txt = read_research_file(&format!("checkpoints/{}.json", clean_tag))?;
     let parse_matrix = |key: &str| -> Option<Vec<Vec<i64>>> {
         let pos = txt.find(key)?;
         let rest = &txt[pos..];
@@ -577,12 +602,33 @@ fn load_pt_checkpoint_states(tag: &str, n_elem: usize, m_rep: usize) -> Option<(
     }
     let mut perms = Vec::with_capacity(m_rep);
     let mut spins = Vec::with_capacity(m_rep);
+    let mut seen = vec![false; n_elem];
     for r in 0..m_rep {
         if p_rows[r].len() != n_elem || s_rows[r].len() != n_elem {
             return None;
         }
-        perms.push(p_rows[r].iter().map(|&v| v as usize).collect());
-        spins.push(s_rows[r].iter().map(|&v| v as i8).collect());
+        seen.fill(false);
+        let mut perm_row = Vec::with_capacity(n_elem);
+        for &v in &p_rows[r] {
+            if v < 0 || (v as usize) >= n_elem {
+                return None;
+            }
+            let u = v as usize;
+            if seen[u] {
+                return None;
+            }
+            seen[u] = true;
+            perm_row.push(u);
+        }
+        let mut spin_row = Vec::with_capacity(n_elem);
+        for &v in &s_rows[r] {
+            if v != -1 && v != 1 {
+                return None;
+            }
+            spin_row.push(v as i8);
+        }
+        perms.push(perm_row);
+        spins.push(spin_row);
     }
     Some((perms, spins))
 }
@@ -599,13 +645,16 @@ pub fn run_parallel_tempering_adaptive(
     ckpt_tag: Option<&str>,
 ) -> PtRunResult {
     let n = n_elem.clamp(12, 96);
+    assert!(base_betas.len() >= 2, "run_parallel_tempering_adaptive requiere al menos 2 réplicas β");
     let m_rep = base_betas.len();
+    let zero_idx = zero_idx.min(m_rep - 1);
     let mut betas = base_betas.to_vec();
     let m_scalar = 0.8f64;
     let nf = if matter_mode > 0 { matter_mode as f64 } else { 0.0 };
     let is_ising = matter_mode < 0;
     let j_ising = 0.45f64;
     let pairs_tot = (n * (n - 1)) as f64;
+    let mut sc = OrderEvalScratch::new(n, matter_mode > 0);
     let mut rng = SplitMix64::new(seed ^ ((n as u64) << 24) ^ ((matter_mode as u64).wrapping_mul(0x9E37_79B9)));
 
     let (mut perms, mut spins) = {
@@ -640,7 +689,7 @@ pub fn run_parallel_tempering_adaptive(
         let (sb, mt, nr) = if is_ising {
             eval_2order_with_ising(&perms[r], &spins[r])
         } else {
-            eval_2order_fast(&perms[r], m_scalar, matter_mode > 0)
+            eval_2order_fast_scratch(&perms[r], m_scalar, matter_mode > 0, &mut sc)
         };
         s_cur[r] = sb;
         m_cur[r] = mt;
@@ -657,6 +706,7 @@ pub fn run_parallel_tempering_adaptive(
                     r_cur: &mut [usize],
                     pair_tries: &mut [usize],
                     pair_accs: &mut [usize],
+                    sc: &mut OrderEvalScratch,
                     rng: &mut SplitMix64| {
         for r in 0..m_rep {
             let beta = betas_ref[r];
@@ -670,7 +720,7 @@ pub fn run_parallel_tempering_adaptive(
                 let (sn, mn, rn) = if is_ising {
                     eval_2order_with_ising(&perms[r], &spins[r])
                 } else {
-                    eval_2order_fast(&perms[r], m_scalar, matter_mode > 0)
+                    eval_2order_fast_scratch(&perms[r], m_scalar, matter_mode > 0, sc)
                 };
                 let dw = if is_ising {
                     beta * (sn - s_cur[r]) - j_ising * (mn - m_cur[r])
@@ -720,7 +770,7 @@ pub fn run_parallel_tempering_adaptive(
     let mut w_tries = vec![0usize; m_rep - 1];
     let mut w_accs = vec![0usize; m_rep - 1];
     for sw in 0..warmup {
-        do_sweep(sw, &betas, &mut perms, &mut spins, &mut s_cur, &mut m_cur, &mut r_cur, &mut w_tries, &mut w_accs, &mut rng);
+        do_sweep(sw, &betas, &mut perms, &mut spins, &mut s_cur, &mut m_cur, &mut r_cur, &mut w_tries, &mut w_accs, &mut sc, &mut rng);
     }
     let w_rates: Vec<f64> = w_accs.iter().zip(&w_tries).map(|(&a, &t)| a as f64 / t.max(1) as f64).collect();
     adapt_beta_segment(&mut betas, &w_rates, 0, zero_idx);
@@ -737,7 +787,7 @@ pub fn run_parallel_tempering_adaptive(
     let mut pair_accs = vec![0usize; m_rep - 1];
 
     for sw in 0..(therm + n_meas) {
-        do_sweep(sw, &betas, &mut perms, &mut spins, &mut s_cur, &mut m_cur, &mut r_cur, &mut pair_tries, &mut pair_accs, &mut rng);
+        do_sweep(sw, &betas, &mut perms, &mut spins, &mut s_cur, &mut m_cur, &mut r_cur, &mut pair_tries, &mut pair_accs, &mut sc, &mut rng);
         if sw >= therm {
             for r in 0..m_rep {
                 s_hist[r].push(s_cur[r]);
@@ -836,25 +886,35 @@ pub fn run_via_b_fss_suite(sizes: &[usize], sweeps_per_size: &[usize], save_ckpt
     let modes = [0i32, 1, 2, -1];
     let mut tasks = Vec::with_capacity(sizes.len() * modes.len());
     for (si, &n) in sizes.iter().enumerate() {
-        let sw = sweeps_per_size[si.min(sweeps_per_size.len() - 1)];
+        let sw = if sweeps_per_size.is_empty() {
+            200
+        } else {
+            sweeps_per_size[si.min(sweeps_per_size.len() - 1)]
+        };
         for &m in &modes {
             tasks.push((n, m, sw));
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    let runs: Vec<PtRunResult> = std::thread::scope(|sc| {
-        let handles: Vec<_> = tasks
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (n, m, sw))| {
-                sc.spawn(move || {
+    let runs: Vec<PtRunResult> = {
+        let max_threads = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4).min(tasks.len().max(1));
+        let next_idx = std::sync::atomic::AtomicUsize::new(0);
+        let results: Vec<std::sync::Mutex<Option<PtRunResult>>> = (0..tasks.len()).map(|_| std::sync::Mutex::new(None)).collect();
+        std::thread::scope(|sc| {
+            for _ in 0..max_threads {
+                sc.spawn(|| loop {
+                    let idx = next_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if idx >= tasks.len() {
+                        break;
+                    }
+                    let (n, m, sw) = tasks[idx];
                     let tag = if save_ckpt {
                         Some(format!("via_b_N{}_m{}", n, if m < 0 { "ising".to_string() } else { m.to_string() }))
                     } else {
                         None
                     };
-                    run_parallel_tempering_adaptive(
+                    let res = run_parallel_tempering_adaptive(
                         n,
                         &VIA_B_BETAS_20,
                         4,
@@ -862,12 +922,13 @@ pub fn run_via_b_fss_suite(sizes: &[usize], sweeps_per_size: &[usize], save_ckpt
                         m,
                         0x19B0_2026 ^ (idx as u64 * 104729),
                         tag.as_deref(),
-                    )
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    });
+                    );
+                    *results[idx].lock().unwrap() = Some(res);
+                });
+            }
+        });
+        results.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+    };
     #[cfg(target_arch = "wasm32")]
     let runs: Vec<PtRunResult> = {
         let _ = save_ckpt;
@@ -1066,18 +1127,22 @@ pub fn run_via_b_wang_landau_2d(
     let need_mat = nf > 0;
     let nf_f = nf as f64;
     let pairs_tot = (n * (n - 1)) as f64;
-    let (mut s_cur, mut m_cur, mut r_cur) = eval_2order_fast(&perm, m_scalar, need_mat);
-    while to_bin(s_cur).is_none() {
+    let mut sc = OrderEvalScratch::new(n, need_mat);
+    let (mut s_cur, mut m_cur, mut r_cur) = eval_2order_fast_scratch(&perm, m_scalar, need_mat, &mut sc);
+    for _ in 0..10_000 {
+        if to_bin(s_cur).is_some() {
+            break;
+        }
         for i in (1..n).rev() {
             let j = (rng.next_u64() % (i + 1) as u64) as usize;
             perm.swap(i, j);
         }
-        let e = eval_2order_fast(&perm, m_scalar, need_mat);
+        let e = eval_2order_fast_scratch(&perm, m_scalar, need_mat, &mut sc);
         s_cur = e.0;
         m_cur = e.1;
         r_cur = e.2;
     }
-    let mut b_cur = to_bin(s_cur).unwrap();
+    let mut b_cur = to_bin(s_cur).unwrap_or_else(|| if s_cur < s_lo as f64 { 0 } else { n_bins - 1 });
 
     // 1. Wang–Landau controlado por planitud de histograma (Landau–Tsai–Exler / Belardinelli–Pereyra):
     //    Partimos de la pendiente lineal cercana a β_c(N) para evitar muros artificiales en bines no
@@ -1100,7 +1165,7 @@ pub fn run_via_b_wang_landau_2d(
                 b += 1;
             }
             perm.swap(a, b);
-            let (sn, mn, rn) = eval_2order_fast(&perm, m_scalar, need_mat);
+            let (sn, mn, rn) = eval_2order_fast_scratch(&perm, m_scalar, need_mat, &mut sc);
             if let Some(bn) = to_bin(sn) {
                 let dw = (g[b_cur] - g[bn]) - nf_f * (mn - m_cur);
                 if dw >= 0.0 || rng.next_f64() < dw.exp() {
@@ -1168,7 +1233,7 @@ pub fn run_via_b_wang_landau_2d(
             b += 1;
         }
         perm.swap(a, b);
-        let (sn, mn, rn) = eval_2order_fast(&perm, m_scalar, need_mat);
+        let (sn, mn, rn) = eval_2order_fast_scratch(&perm, m_scalar, need_mat, &mut sc);
         if let Some(bn) = to_bin(sn) {
             let dw = (g[b_cur] - g[bn]) - nf_f * (mn - m_cur);
             if dw >= 0.0 || rng.next_f64() < dw.exp() {
@@ -1200,6 +1265,9 @@ pub fn run_via_b_wang_landau_2d(
 
     // 3. Reponderación canónica continua en β ∈ [0,00; 0,35] (paso Δβ = 0,002)
     let eval_beta = |beta: f64| -> (f64, f64, f64, f64, Vec<(f64, f64)>) {
+        if visited.is_empty() {
+            return (0.0, 0.0, 0.0, 2.0, Vec::new());
+        }
         let mut max_lw = f64::NEG_INFINITY;
         for &(_, ge, sm, _, _) in &visited {
             max_lw = max_lw.max(ge + beta * sm);
@@ -1219,12 +1287,14 @@ pub fn run_via_b_wang_landau_2d(
         let mean_d = dm / z.max(1e-30);
         let mut mu2 = 0.0;
         let mut mu4 = 0.0;
-        for &(_, ge, sm, _, _) in &visited {
+        for &(_, ge, sm, s2m, _) in &visited {
             let w = (ge + beta * sm - max_lw).exp() / z.max(1e-30);
             let d = sm - mean_s;
             let d2 = d * d;
-            mu2 += w * d2;
-            mu4 += w * d2 * d2;
+            // Ley de varianza total incorporando la varianza intra-bin acumulada en `s2_sum`
+            let var_b = (s2m - sm * sm).max(0.0);
+            mu2 += w * (d2 + var_b);
+            mu4 += w * (d2 * d2 + 6.0 * d2 * var_b + 1.8 * var_b * var_b);
         }
         let chi = mu2 / n as f64;
         let binder = if mu2 > 1e-20 { 1.0 - mu4 / (3.0 * mu2 * mu2) } else { 0.0 };
@@ -1331,7 +1401,8 @@ pub fn run_via_b_matter_mass_nf_sweep(n_elem: usize, sweeps: usize, seed: u64) -
             perm.swap(i, j);
         }
         let pairs_tot = (n * (n - 1)) as f64;
-        let (_, mut m_cur, mut r_cur) = eval_2order_fast(&perm, ms, nf > 0);
+        let mut sc = OrderEvalScratch::new(n, nf > 0);
+        let (_, mut m_cur, mut r_cur) = eval_2order_fast_scratch(&perm, ms, nf > 0, &mut sc);
         let therm = sweeps / 3;
         let moves = (n / 2).max(6);
         let mut d_hist = Vec::with_capacity(sweeps - therm);
@@ -1343,7 +1414,7 @@ pub fn run_via_b_matter_mass_nf_sweep(n_elem: usize, sweeps: usize, seed: u64) -
                     b += 1;
                 }
                 perm.swap(a, b);
-                let (_, mn, rn) = eval_2order_fast(&perm, ms, nf > 0);
+                let (_, mn, rn) = eval_2order_fast_scratch(&perm, ms, nf > 0, &mut sc);
                 let dw = -(nf as f64) * (mn - m_cur);
                 if dw >= 0.0 || rng.next_f64() < dw.exp() {
                     m_cur = mn;
@@ -1389,7 +1460,8 @@ pub fn run_via_b_large_nf_point(
         perm.swap(i, j);
     }
     let pairs_tot = (n * (n - 1)) as f64;
-    let (_, mut m_cur, mut r_cur) = eval_2order_fast(&perm, m_scalar, nf > 0);
+    let mut sc = OrderEvalScratch::new(n, nf > 0);
+    let (_, mut m_cur, mut r_cur) = eval_2order_fast_scratch(&perm, m_scalar, nf > 0, &mut sc);
     let therm = sweeps / 3;
     let moves = (n / 2).max(6);
     let mut d_hist = Vec::with_capacity(sweeps - therm);
@@ -1401,7 +1473,7 @@ pub fn run_via_b_large_nf_point(
                 b += 1;
             }
             perm.swap(a, b);
-            let (_, mn, rn) = eval_2order_fast(&perm, m_scalar, nf > 0);
+            let (_, mn, rn) = eval_2order_fast_scratch(&perm, m_scalar, nf > 0, &mut sc);
             let dw = -(nf as f64) * (mn - m_cur);
             if dw >= 0.0 || rng.next_f64() < dw.exp() {
                 m_cur = mn;

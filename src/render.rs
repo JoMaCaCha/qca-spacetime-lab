@@ -104,7 +104,9 @@ impl QuantumSpacetimeUniverse {
     /// tono = atan2(⟨σ_x⟩, ⟨σ_z⟩) y saturación = |⟨σ⟩| proyectado. En los demás modos, la fase de ψ↑.
     fn render_dirac2d(&mut self) {
         let n = self.w * self.h;
-        let gauge = self.render_mode == 4 && self.em.mode != 0;
+        let nco = self.ncol;
+        let stride = self.stride();
+        let gauge = self.render_mode == 4 && self.em.mode != 0 && nco == 1;
         let bmax = if gauge { self.gauge_bmax() } else { 0.0 };
         let mut emax = 0.0f32;
         for i in 0..n {
@@ -112,20 +114,45 @@ impl QuantumSpacetimeUniverse {
         }
         let inv = if emax > 0.0 { 1.0 / emax } else { 0.0 };
         for i in 0..n {
-            let b = i * 4;
-            let (ur, ui, dr, di) = (self.buffer_read[b], self.buffer_read[b + 1], self.buffer_read[b + 2], self.buffer_read[b + 3]);
-            let e = ur * ur + ui * ui + dr * dr + di * di;
-            let v = (e * inv).powf(self.brightness_gamma);
+            let b = i * stride;
+            let (mut e, mut sx, mut sz, mut ur_sum, mut ui_sum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            if nco == 1 {
+                let (ur, ui, dr, di) = (self.buffer_read[b], self.buffer_read[b + 1], self.buffer_read[b + 2], self.buffer_read[b + 3]);
+                e = ur * ur + ui * ui + dr * dr + di * di;
+                sx = 2.0 * (ur * dr + ui * di);
+                sz = ur * ur + ui * ui - dr * dr - di * di;
+                ur_sum = ur;
+                ui_sum = ui;
+            } else {
+                // Con color (SU(N)), las amplitudes se almacenan como [↑_c0..↑_cN-1, ↓_c0..↓_cN-1]
+                for a in 0..nco {
+                    let ou = b + 2 * a;
+                    let od = b + 2 * (nco + a);
+                    let (ur, ui, dr, di) = (self.buffer_read[ou], self.buffer_read[ou + 1], self.buffer_read[od], self.buffer_read[od + 1]);
+                    let nu = ur * ur + ui * ui;
+                    let nd = dr * dr + di * di;
+                    e += nu + nd;
+                    sx += 2.0 * (ur * dr + ui * di);
+                    sz += nu - nd;
+                    ur_sum += ur;
+                    ui_sum += ui;
+                }
+            }
+            let v = (e * inv).clamp(0.0, 1.0).powf(self.brightness_gamma);
             let rgb = if self.render_mode == 3 {
-                let sx = 2.0 * (ur * dr + ui * di);
-                let sz = ur * ur + ui * ui - dr * dr - di * di;
                 let sat = if e > 0.0 { ((sx * sx + sz * sz).sqrt() / e).clamp(0.0, 1.0) } else { 0.0 };
                 hsv_to_rgb(sx.atan2(sz), sat, v)
+            } else if self.render_mode == 5 && nco > 1 {
+                self.colour_charge_rgb(i, v)
             } else {
-                hsv_to_rgb(ui.atan2(ur), 0.8, v)
+                hsv_to_rgb(ui_sum.atan2(ur_sum), 0.8, v)
             };
             let rgb = if gauge { self.tint_gauge(rgb, self.gauge_b_at(i % self.w, i / self.w), bmax) } else { rgb };
-            let rgb = if self.render_mode == 3 && self.dmass.active { self.tint_dirac_mass(rgb, i) } else { rgb };
+            let rgb = if self.render_mode == 3 && self.dmass.active && self.dmass.m.len() == self.n {
+                self.tint_dirac_mass(rgb, i)
+            } else {
+                rgb
+            };
             let rgb = self.blend_barrier(rgb, self.potential[i], self.has_walls && self.wall[i] != 0);
             self.put_pixel(i, rgb);
         }
@@ -217,10 +244,12 @@ impl QuantumSpacetimeUniverse {
                 if self.sw.mass_kind == 1 && !self.sw.mass_cell.is_empty() {
                     // 1 − sin μ/sin m₀ en ámbar: los núcleos de la cuerda
                     let c = self.idx(x, y, 0);
-                    let smu = (self.sw.mass_cell[3 * c + 1].powi(2) + self.sw.mass_cell[3 * c + 2].powi(2)).sqrt() as f32;
-                    let core = (1.0 - smu / (self.sw.string_m0 as f32).sin().max(1e-6)).clamp(0.0, 1.0);
-                    let a = 0.35 * core;
-                    rgb = (rgb.0 * (1.0 - a) + a, rgb.1 * (1.0 - a) + 0.65 * a, rgb.2 * (1.0 - a) + 0.15 * a);
+                    if 3 * c + 2 < self.sw.mass_cell.len() {
+                        let smu = (self.sw.mass_cell[3 * c + 1].powi(2) + self.sw.mass_cell[3 * c + 2].powi(2)).sqrt() as f32;
+                        let core = (1.0 - smu / (self.sw.string_m0 as f32).sin().max(1e-6)).clamp(0.0, 1.0);
+                        let a = 0.35 * core;
+                        rgb = (rgb.0 * (1.0 - a) + a, rgb.1 * (1.0 - a) + 0.65 * a, rgb.2 * (1.0 - a) + 0.15 * a);
+                    }
                 }
                 let (pv, wall) = (self.potential[cell], self.has_walls && self.wall[cell] != 0);
                 let rgb = self.blend_barrier(rgb, pv, wall);
@@ -451,7 +480,13 @@ impl QuantumSpacetimeUniverse {
     fn render_kaplan(&mut self) {
         let (w, h) = (self.w, self.h);
         let ls = self.kap.ls;
+        if ls == 0 {
+            return;
+        }
         let dens = self.kaplan_density();
+        if dens.len() < ls {
+            return;
+        }
         let dmax = dens.iter().cloned().fold(1e-300, f64::max);
         let g5 = crate::spinor::dirac_matrix(0, 3);
         for x in 0..w {
@@ -522,43 +557,48 @@ impl QuantumSpacetimeUniverse {
     /// En 3D, la MIP toma el máximo de cada columna.
     fn render_higgs(&mut self) {
         let (w, h, d) = (self.w, self.h, self.d);
+        let wh = w * h;
+        // Una única pasada sobre los vóxeles para calcular brillo y B sin duplicar llamadas a plaquetas.
+        let mut bright_buf = vec![0.0f32; wh];
+        let mut b_buf = vec![0.0f32; wh];
         let mut bmax = 0.0f32;
-        // primera pasada: máximo de |B| para normalizar
-        for y in 0..h {
-            for x in 0..w {
-                let b = if self.dim == 2 || self.view == 1 {
-                    let z = if self.dim == 3 { self.slice } else { 0 };
-                    self.higgs_b_display(self.idx(x, y, z)).abs()
-                } else {
-                    (0..d).map(|z| self.higgs_b_display(self.idx(x, y, z)).abs()).fold(0.0f32, f32::max)
-                };
-                bmax = bmax.max(b);
-            }
-        }
-        for y in 0..h {
-            for x in 0..w {
-                let (bright, b) = if self.dim == 2 || self.view == 1 {
-                    let z = if self.dim == 3 { self.slice } else { 0 };
+        if self.dim == 2 || self.view == 1 {
+            let z = if self.dim == 3 { self.slice } else { 0 };
+            for y in 0..h {
+                for x in 0..w {
+                    let px = y * w + x;
                     let i = self.idx(x, y, z);
-                    ((1.0 - self.higgs_rel_abs(i)).clamp(0.0, 1.0), self.higgs_b_display(i))
-                } else {
-                    let mut br = 0.0f32;
-                    let mut bb = 0.0f32;
-                    for z in 0..d {
+                    bright_buf[px] = (1.0 - self.higgs_rel_abs(i)).clamp(0.0, 1.0);
+                    let b = self.higgs_b_display(i);
+                    b_buf[px] = b;
+                    bmax = bmax.max(b.abs());
+                }
+            }
+        } else {
+            for z in 0..d {
+                for y in 0..h {
+                    for x in 0..w {
+                        let px = y * w + x;
                         let i = self.idx(x, y, z);
-                        br = br.max((1.0 - self.higgs_rel_abs(i)).clamp(0.0, 1.0));
+                        let br = (1.0 - self.higgs_rel_abs(i)).clamp(0.0, 1.0);
+                        if br > bright_buf[px] {
+                            bright_buf[px] = br;
+                        }
                         let v = self.higgs_b_display(i);
-                        if v.abs() > bb.abs() {
-                            bb = v;
+                        if v.abs() > b_buf[px].abs() {
+                            b_buf[px] = v;
+                            bmax = bmax.max(v.abs());
                         }
                     }
-                    (br, bb)
-                };
-                let v = bright.powf(self.brightness_gamma.min(1.0));
-                let base = (0.92 * v, 0.92 * v, 0.98 * v);
-                let c = self.tint_gauge(base, b, bmax);
-                self.put_pixel(y * w + x, c);
+                }
             }
+        }
+        let gam = self.brightness_gamma.min(1.0);
+        for px in 0..wh {
+            let v = bright_buf[px].powf(gam);
+            let base = (0.92 * v, 0.92 * v, 0.98 * v);
+            let c = self.tint_gauge(base, b_buf[px], bmax);
+            self.put_pixel(px, c);
         }
     }
 
@@ -637,36 +677,49 @@ impl QuantumSpacetimeUniverse {
             }
             return;
         }
+        if self.view == 1 {
+            for y in 0..h {
+                for x in 0..w {
+                    let px = y * w + x;
+                    let cell = self.idx(x, y, self.slice);
+                    let c = self.matter_color(cell);
+                    let c = if gauge { self.tint_gauge(c, self.gauge_b_at(x, y), bmax) } else { c };
+                    let c = self.blend_barrier(c, self.potential[cell], self.has_walls && self.wall[cell] != 0);
+                    self.put_pixel(px, c);
+                }
+            }
+            return;
+        }
+        // MIP 3D con recorrido secuencial z -> y -> x (localidad de caché óptima)
+        let wh = w * h;
+        let mut best_e = vec![-1.0f32; wh];
+        let mut best_cell = vec![0usize; wh];
+        let mut best_v = vec![0.0f32; wh];
+        let mut any_wall = vec![false; wh];
+        for z in 0..d {
+            let plane = z * wh;
+            for px in 0..wh {
+                let c = plane + px;
+                let e = self.density(c);
+                if e > best_e[px] {
+                    best_e[px] = e;
+                    best_cell[px] = c;
+                }
+                let v = self.potential[c];
+                if v.abs() > best_v[px].abs() {
+                    best_v[px] = v;
+                }
+                if self.has_walls && self.wall[c] != 0 {
+                    any_wall[px] = true;
+                }
+            }
+        }
         for y in 0..h {
             for x in 0..w {
                 let px = y * w + x;
-                let (cell, vmax, any_wall) = if self.view == 1 {
-                    let c = self.idx(x, y, self.slice);
-                    (c, self.potential[c], self.has_walls && self.wall[c] != 0)
-                } else {
-                    // MIP: el vóxel con E máxima de la columna; V y muros si la columna tiene alguno
-                    let mut best = (-1.0f32, self.idx(x, y, 0));
-                    let mut vm = 0.0f32;
-                    let mut wl = false;
-                    for z in 0..d {
-                        let c = self.idx(x, y, z);
-                        let e = self.density(c);
-                        if e > best.0 {
-                            best = (e, c);
-                        }
-                        let v = self.potential[c];
-                        if v.abs() > vm.abs() {
-                            vm = v;
-                        }
-                        if self.has_walls && self.wall[c] != 0 {
-                            wl = true;
-                        }
-                    }
-                    (best.1, vm, wl)
-                };
-                let c = self.matter_color(cell);
+                let c = self.matter_color(best_cell[px]);
                 let c = if gauge { self.tint_gauge(c, self.gauge_b_at(x, y), bmax) } else { c };
-                let c = self.blend_barrier(c, vmax, any_wall);
+                let c = self.blend_barrier(c, best_v[px], any_wall[px]);
                 self.put_pixel(px, c);
             }
         }
@@ -677,7 +730,7 @@ impl QuantumSpacetimeUniverse {
 impl QuantumSpacetimeUniverse {
     /// Dibuja el estado actual en el búfer RGBA (W × H; en 3D, MIP o corte).
     pub fn render_rgba(&mut self) {
-        if self.scenario == 10 && (self.an.strip.is_some() || self.an.setup == 4) {
+        if self.scenario == 10 && matches!(self.an.setup, 0 | 1 | 4) {
             self.render_analog();
             return;
         }
@@ -717,11 +770,13 @@ impl QuantumSpacetimeUniverse {
             self.render_dirac2d();
             return;
         }
-        // e_eff al día para la vista volumétrica opcional (lee `e_eff_ptr` sin copias)
-        let inv = 1.0 / self.e_max;
-        for i in 0..self.n {
-            let e = self.density(i);
-            self.e_eff[i] = e / (1.0 + e * inv);
+        // e_eff al día solo para la vista volumétrica (view == 2); ahorra un barrido completo por frame en 2D/MIP/corte
+        if self.view == 2 {
+            let inv = 1.0 / self.e_max;
+            for i in 0..self.n {
+                let e = self.density(i);
+                self.e_eff[i] = e / (1.0 + e * inv);
+            }
         }
         self.render_matter();
     }

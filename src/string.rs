@@ -37,19 +37,23 @@ impl QuantumSpacetimeUniverse {
         }
         // salto de la costura y: exceso del salto sobre el de las celdas vecinas, promediado en x
         let mut dy = 0.0;
-        for x in 0..w {
-            let seam = wrap_angle(th[x] - th[(h - 1) * w + x]);
-            let inner = 0.5 * (wrap_angle(th[w + x] - th[x]) + wrap_angle(th[(h - 1) * w + x] - th[(h - 2) * w + x]));
-            dy += seam - inner;
+        if h >= 2 {
+            for x in 0..w {
+                let seam = wrap_angle(th[x] - th[(h - 1) * w + x]);
+                let inner = 0.5 * (wrap_angle(th[w + x] - th[x]) + wrap_angle(th[(h - 1) * w + x] - th[(h - 2) * w + x]));
+                dy += seam - inner;
+            }
+            dy /= w as f64;
         }
-        dy /= w as f64;
         let mut dx = 0.0;
-        for y in 0..h {
-            let seam = wrap_angle(th[y * w] - th[y * w + w - 1]);
-            let inner = 0.5 * (wrap_angle(th[y * w + 1] - th[y * w]) + wrap_angle(th[y * w + w - 1] - th[y * w + w - 2]));
-            dx += seam - inner;
+        if w >= 2 {
+            for y in 0..h {
+                let seam = wrap_angle(th[y * w] - th[y * w + w - 1]);
+                let inner = 0.5 * (wrap_angle(th[y * w + 1] - th[y * w]) + wrap_angle(th[y * w + w - 1] - th[y * w + w - 2]));
+                dx += seam - inner;
+            }
+            dx /= h as f64;
         }
-        dx /= h as f64;
         for y in 0..h {
             for x in 0..w {
                 th[y * w + x] += dy * y as f64 / hf + dx * x as f64 / wf;
@@ -115,7 +119,8 @@ impl QuantumSpacetimeUniverse {
             return;
         }
         let winding = winding.clamp(-4, 4);
-        let (m0, xi) = (m0.clamp(0.0, 1.5) as f64, (xi as f64).max(0.2));
+        let m0 = crate::util::clamp_finite(m0 as f64, 0.0, 1.5, 0.6);
+        let xi = crate::util::clamp_finite(xi as f64, 0.2, 100.0, 1.5);
         let cores = self.string_cores();
         let th = self.string_phase_plane(winding, cores);
         let (w, h) = (self.w, self.h);

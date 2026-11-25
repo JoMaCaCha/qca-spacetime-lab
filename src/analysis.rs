@@ -40,29 +40,51 @@ pub struct SolitonAnalyzer {
 }
 
 impl SolitonAnalyzer {
-    pub fn new(n: usize) -> Self {
+    pub fn new(_n: usize) -> Self {
         SolitonAnalyzer {
-            labels: vec![-1; n],
-            stack: Vec::with_capacity(n),
-            stats: vec![0.0; MAX_SOLITONS * SOLITON_FIELDS],
+            labels: Vec::new(),
+            stack: Vec::new(),
+            stats: Vec::new(),
             count: 0,
-            acc: vec![[0.0; 7]; MAX_SOLITONS],
-            peak: vec![(0.0, 0); MAX_SOLITONS],
-            lin: vec![[0.0; 3]; MAX_SOLITONS],
-            rg2: vec![0.0; MAX_SOLITONS],
-            cur_phase: vec![0.0; MAX_SOLITONS],
+            acc: Vec::new(),
+            peak: Vec::new(),
+            lin: Vec::new(),
+            rg2: Vec::new(),
+            cur_phase: Vec::new(),
             prev_count: 0,
-            prev_center: vec![[0.0; 3]; MAX_SOLITONS],
-            prev_rg: vec![0.0; MAX_SOLITONS],
-            prev_id: vec![0; MAX_SOLITONS],
-            prev_peak: vec![0.0; MAX_SOLITONS],
-            prev_phase: vec![0.0; MAX_SOLITONS],
+            prev_center: Vec::new(),
+            prev_rg: Vec::new(),
+            prev_id: Vec::new(),
+            prev_peak: Vec::new(),
+            prev_phase: Vec::new(),
             prev_t: 0,
             prev_valid: false,
-            used: vec![false; MAX_SOLITONS],
-            taken: vec![false; MAX_SOLITONS],
-            pairs: Vec::with_capacity(16 * MAX_SOLITONS),
+            used: Vec::new(),
+            taken: Vec::new(),
+            pairs: Vec::new(),
             next_id: 1,
+        }
+    }
+
+    pub fn ensure_buffers(&mut self, n: usize) {
+        if self.labels.len() != n {
+            self.labels = vec![-1; n];
+            self.stack = Vec::with_capacity(n);
+        }
+        if self.stats.is_empty() {
+            self.stats = vec![0.0; MAX_SOLITONS * SOLITON_FIELDS];
+            self.acc = vec![[0.0; 7]; MAX_SOLITONS];
+            self.peak = vec![(0.0, 0); MAX_SOLITONS];
+            self.lin = vec![[0.0; 3]; MAX_SOLITONS];
+            self.rg2 = vec![0.0; MAX_SOLITONS];
+            self.cur_phase = vec![0.0; MAX_SOLITONS];
+            self.prev_center = vec![[0.0; 3]; MAX_SOLITONS];
+            self.prev_rg = vec![0.0; MAX_SOLITONS];
+            self.prev_id = vec![0; MAX_SOLITONS];
+            self.prev_peak = vec![0.0; MAX_SOLITONS];
+            self.prev_phase = vec![0.0; MAX_SOLITONS];
+            self.used = vec![false; MAX_SOLITONS];
+            self.taken = vec![false; MAX_SOLITONS];
         }
     }
 
@@ -168,9 +190,10 @@ impl QuantumSpacetimeUniverse {
     }
 
     /// Detecta las componentes conexas toroidales con E > 8·⟨E⟩ (≥ 5 celdas), las mide y las
-    /// empareja con el análisis anterior. No asigna memoria.
+    /// empareja con el análisis anterior. Los búferes se reservan en el primer análisis.
     pub(crate) fn run_soliton_analysis(&mut self) -> usize {
         let n = self.n;
+        self.sol.ensure_buffers(n);
         let thr = DETECT_FACTOR * self.mean_density() as f32;
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let mut labels = std::mem::take(&mut self.sol.labels);
@@ -179,6 +202,9 @@ impl QuantumSpacetimeUniverse {
         let mut count = 0usize;
         let is_wall = |s: &Self, i: usize| s.has_walls && s.wall[i] != 0;
         for start in 0..n {
+            if count >= MAX_SOLITONS {
+                break;
+            }
             if labels[start] != -1 || self.density(start) <= thr || is_wall(self, start) {
                 continue;
             }
@@ -306,12 +332,12 @@ impl QuantumSpacetimeUniverse {
                     r2 += dd * dd;
                 }
                 let lim = 2.0 * rg.max(self.sol.prev_rg[p]) + 1.0;
-                if r2 <= lim * lim && pairs.len() < pairs.capacity() {
+                if r2 <= lim * lim {
                     pairs.push((r2, s as u16, p as u16));
                 }
             }
         }
-        pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         for p in 0..MAX_SOLITONS.min(prev_n.max(count) + 1) {
             self.sol.used[p] = false;
             self.sol.taken[p] = false;
@@ -425,6 +451,9 @@ impl QuantumSpacetimeUniverse {
     /// Centro de E^power dentro de una esfera de radio `half` alrededor de (cx, cy, cz).
     #[allow(clippy::too_many_arguments)]
     pub fn centroid_window(&self, axis: u32, cx: f32, cy: f32, cz: f32, half: f32, power: i32) -> f64 {
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && half.is_finite()) || half < 0.0 {
+            return 0.0;
+        }
         let a = (axis as usize).min(self.dim - 1);
         self.centroid_axis(a, power.max(1), Some(([cx as f64, cy as f64, cz as f64], half as f64)))
     }
@@ -476,6 +505,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Índice del solitón que contiene la celda, o −1.
     pub fn soliton_at(&self, x: i32, y: i32, z: i32) -> i32 {
+        if self.sol.labels.len() != self.n {
+            return -1;
+        }
         let c = self.wrap_cell(x, y, z);
         let l = self.sol.labels[c];
         if l >= 0 && (l as usize) < self.sol.count {
@@ -580,6 +612,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Máximo de E dentro de una esfera de radio `radius` alrededor de (cx, cy, cz).
     pub fn max_density_in_sphere(&self, cx: f32, cy: f32, cz: f32, radius: f32) -> f32 {
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && radius.is_finite()) || radius < 0.0 {
+            return 0.0;
+        }
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let p = [cx as f64, cy as f64, cz as f64];
         let mut m = 0.0f32;
@@ -600,6 +635,9 @@ impl QuantumSpacetimeUniverse {
 
     /// Norma dentro de una esfera de radio `radius` alrededor de (cx, cy, cz).
     pub fn norm_in_sphere(&self, cx: f32, cy: f32, cz: f32, radius: f32) -> f64 {
+        if !(cx.is_finite() && cy.is_finite() && cz.is_finite() && radius.is_finite()) || radius < 0.0 {
+            return 0.0;
+        }
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let p = [cx as f64, cy as f64, cz as f64];
         let mut s = 0.0;
@@ -625,6 +663,9 @@ impl QuantumSpacetimeUniverse {
     /// promediada sobre el núcleo (relojes que viajan con el paquete).
     #[allow(clippy::too_many_arguments)]
     pub fn local_phase(&self, cx: f32, cy: f32, cz: f32, radius: f32, kx: f32, ky: f32, kz: f32) -> f64 {
+        if ![cx, cy, cz, radius, kx, ky, kz].iter().all(|v| v.is_finite()) || radius < 0.0 {
+            return 0.0;
+        }
         let dims = [self.w as f64, self.h as f64, self.d as f64];
         let c = [cx as f64, cy as f64, cz as f64];
         let k = [kx as f64, ky as f64, kz as f64];
