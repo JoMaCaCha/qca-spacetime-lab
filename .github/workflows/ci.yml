@@ -43,8 +43,6 @@ jobs:
         run: python scripts/verify_via_c_schwinger_exact.py
       - name: Regenerate publication figures & LaTeX tables
         run: python scripts/generate_publication_assets.py
-      - name: Regenerate PRD Comment birefringence figure
-        run: python scripts/generate_comment_figure.py
 
   wasm-build-and-pages:
     name: Build WASM SIMD & Prepare Interactive Lab

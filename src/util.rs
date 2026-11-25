@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 //! envolturas toroidales y ajustes sencillos usados por el laboratorio y los tests.
 
-use std::f32::consts::PI as PI32;
+use std::f32::consts::{FRAC_2_PI, PI as PI32};
 use std::f64::consts::PI;
 
 /// (cos x, sin x) con reducción de rango a [−π/4, π/4] y polinomios de Taylor de grado 8/9.
@@ -10,7 +10,6 @@ use std::f64::consts::PI;
 /// conserva la norma exactamente (§4.2).
 #[inline(always)]
 pub fn fast_cos_sin(x: f32) -> (f32, f32) {
-    const FRAC_2_PI: f32 = 0.636_619_77;
     const PI_2_HI: f32 = 1.570_796_4;
     const PI_2_LO: f32 = -4.371_139e-8;
     let q = (x * FRAC_2_PI).round();
@@ -36,7 +35,7 @@ pub fn fast_cos_sin(x: f32) -> (f32, f32) {
 #[inline(always)]
 pub(crate) unsafe fn fast_cos_sin_x4(x: core::arch::wasm32::v128) -> (core::arch::wasm32::v128, core::arch::wasm32::v128) {
     use core::arch::wasm32::*;
-    let frac_2_pi = f32x4_splat(0.636_619_77);
+    let frac_2_pi = f32x4_splat(FRAC_2_PI);
     let pi_2_hi = f32x4_splat(1.570_796_4);
     let pi_2_lo = f32x4_splat(-4.371_139e-8);
     let q = f32x4_nearest(f32x4_mul(x, frac_2_pi));
