@@ -26,7 +26,7 @@ jobs:
       pages: ${{ steps.filter.outputs.pages }}
       full_rust: ${{ steps.filter.outputs.full_rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Classify modified paths
@@ -94,7 +94,7 @@ jobs:
     if: needs.detect-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -119,8 +119,8 @@ jobs:
     if: needs.detect-changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install pinned Python dependencies
@@ -144,13 +144,13 @@ jobs:
       (needs.rust-tests.result == 'success' || needs.rust-tests.result == 'skipped') &&
       (needs.python-independent-verification.result == 'success' || needs.python-independent-verification.result == 'skipped')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4.0
-      - uses: actions/setup-node@v4
+      - uses: taiki-e/install-action@wasm-pack
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build WASM SIMD package
@@ -182,7 +182,7 @@ jobs:
           cp pkg/qca_spacetime_lab.js pkg/qca_spacetime_lab_bg.wasm _site/pkg/
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
@@ -208,4 +208,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
